@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FlowPilot - Sprint 1 Day 1</title>
+    <meta name="viewport" content="width=device-width">
+    <style>
+        body { 
+            font-family: system-ui; 
+            max-width: 800px; 
+            margin: 2rem auto; 
+            padding: 2rem; 
+            background: #f8fafc;
+        }
+        .hero { 
+            text-align: center; 
+            background: white; 
+            padding: 3rem; 
+            border-radius: 1rem; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .badge { 
+            background: #0ea5e9; 
+            color: white; 
+            padding: 0.5rem 1rem; 
+            border-radius: 999px; 
+            font-weight: 600; 
+            display: inline-block;
+        }
+        button { 
+            background: #0ea5e9; 
+            color: white; 
+            border: none; 
+            padding: 1rem 2rem; 
+            border-radius: 0.5rem; 
+            font-weight: 600; 
+            cursor: pointer;
+            margin: 0.5rem;
+        }
+        button:hover { background: #0284c7; }
+        pre { background: #f1f5f9; padding: 1rem; border-radius: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <h1>🚀 FlowPilot</h1>
+        <p>AI Task Extraction → Google Calendar</p>
+        <div class="badge">Sprint 1 Day 1 ✅ LIVE</div>
+        
+        <br><br>
+        <button onclick="testAPI()">Test API Health</button>
+        <button onclick="window.open('/docs', '_blank')">Open API Docs</button>
+        
+        <h3>Status:</h3>
+        <pre id="status">Click Test API → Results appear here</pre>
+    </div>
+
+    <script>
+        async function testAPI() {
+            try {
+                const res = await fetch('/api/health');
+                const data = await res.json();
+                document.getElementById('status').textContent = 
+                    `Status: ${data.status}\nSprint: ${data.sprint}\nOpenAI Ready: ${data.openai_key}`;
+            } catch(e) {
+                document.getElementById('status').textContent = 'Error: ' + e.message;
+            }
+        }
+    </script>
+</body>
+</html>
