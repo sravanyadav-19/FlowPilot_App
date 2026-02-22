@@ -13,25 +13,26 @@ export const useTaskExtractor = () => {
       return false;
     }
 
-    // Check for API URL configuration
-    const apiUrl = import.meta.env.VITE_API_URL;
-    if (!apiUrl) {
-      setError('⚙️ Configuration error: API endpoint not configured. Check .env file.');
-      console.error('VITE_API_URL is not defined in environment variables');
-      return false;
-    }
+    // ✅ FIXED: Fallback to production URL if env var missing
+    const apiUrl = import.meta.env.VITE_API_URL || 'https://flowpilot-app.onrender.com/api/process';
+    
+    console.log('🔗 API URL:', apiUrl); // Debug log
 
     setLoading(true);
     setTasks([]);
     setError('');
 
     try {
-      const response = await axios.post<{ tasks: BackendTask[]; message?: string; count?: number }>(
+      const response = await axios.post<{ 
+        tasks: BackendTask[]; 
+        message?: string; 
+        count?: number 
+      }>(
         apiUrl,
         { text },
         { 
           headers: { 'Content-Type': 'application/json' },
-          timeout: 20000  // 20 second timeout (Render free tier can be slow)
+          timeout: 30000  // 30 second timeout (increased for Render free tier)
         }
       );
 
@@ -61,7 +62,7 @@ export const useTaskExtractor = () => {
       if (axiosError.code === 'ECONNABORTED') {
         errorMsg = '⏱️ Request timeout. The server might be waking up (free tier). Please wait 30 seconds and try again.';
       } else if (axiosError.response?.status === 413) {
-        errorMsg = '📏 Text too long. Please keep it under 5000 characters.';
+        errorMsg = '📏 Text too long. Please keep it under 10,000 characters.';
       } else if (axiosError.response?.status === 400) {
         errorMsg = axiosError.response.data?.detail || 'Invalid input. Please check your text.';
       } else if (axiosError.response?.status === 500) {
