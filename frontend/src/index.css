@@ -2,17 +2,47 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer components {
-  .bg-primary-100 { @apply bg-indigo-100; }
-  .text-primary-800 { @apply text-indigo-800; }
+/* Custom scrollbar for task lists */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
 }
 
-.overflow-y-auto::-webkit-scrollbar {
-  width: 8px;
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
 }
-.overflow-y-auto::-webkit-scrollbar-track {
-  @apply bg-gray-100 rounded-full;
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
 }
-.overflow-y-auto::-webkit-scrollbar-thumb {
-  @apply bg-gray-300 rounded-full hover:bg-gray-400;
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Smooth transitions */
+* {
+  @apply transition-colors duration-200;
+}
+
+/* Focus styles for accessibility */
+button:focus-visible,
+textarea:focus-visible {
+  @apply ring-4 ring-indigo-500/30 outline-none;
+}
+
+/* Animation keyframes */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s ease-out;
 }

@@ -8,8 +8,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({ type }) => {
   const states = {
     calendar: {
       icon: '📱',
-      title: 'No tasks ready yet',
-      subtitle: 'Extract some tasks to see schedulable items'
+      title: 'No urgent tasks',
+      subtitle: 'High/medium priority tasks will appear here'
     },
     review: {
       icon: '⚡',
