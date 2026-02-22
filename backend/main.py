@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Optional
 from pathlib import Path
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -34,7 +34,6 @@ class Config:
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", 8000))
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
-    ALLOWED_ORIGINS: List[str] = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "").split(",") if origin.strip()]
 
 config = Config()
 
@@ -62,17 +61,23 @@ app = FastAPI(
     debug=config.DEBUG,
 )
 
-# CORS
-origins = config.ALLOWED_ORIGINS if config.ALLOWED_ORIGINS else ["*"]
+# ✅ FIXED CORS - Add Vercel domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=[
+        "http://localhost:3000",
+        "https://flowpilot-app.vercel.app",  # ✅ Vercel frontend
+        "*"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Pydantic models
+# ✅ Pydantic models - Frontend compatible
+class TextRequest(BaseModel):  # 🆕 NEW - Matches frontend JSON
+    text: str
+
 class Task(BaseModel):
     id: str
     title: str
@@ -96,7 +101,6 @@ class ConfigResponse(BaseModel):
 
 @app.get("/api/config", response_model=ConfigResponse)
 async def get_config():
-    """Returns configuration needed by the frontend. Only non-sensitive values."""
     return ConfigResponse(
         google_client_id=config.GOOGLE_CLIENT_ID,
         llm_available=LLM_AVAILABLE,
@@ -118,22 +122,19 @@ def get_system_prompt() -> str:
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"""You are FlowPilot. Current DateTime: {current_time_str}.
 
-GOAL: Transform messy, vague, or personal text into clear, actionable tasks.
+GOAL: Transform messy text into clear, actionable tasks.
 
 RULES:
-1. DETECT SARCASM - If text is sarcastic, set is_sarcastic: true and still return the task object
-2. DATE/TIME LOGIC:
-   - CASE A: SPECIFIC TIME → YYYY-MM-DDTHH:MM:SS (e.g., "at 2pm" → 2026-02-20T14:00:00)
-   - CASE B: VAGUE DATE ONLY → YYYY-MM-DD (e.g., "tomorrow" → 2026-02-21)
-3. PRIORITY: HIGH (0-24h/urgent), MEDIUM (1 week), LOW (further)
-4. CATEGORY: Work, Personal, or Meeting only
-5. TITLE: Short, imperative, logical. Remove "I will/I want"
+1. DETECT SARCASM - If sarcastic, set is_sarcastic: true
+2. PRIORITY: HIGH (0-24h/urgent), MEDIUM (1 week), LOW (further)
+3. CATEGORY: Work, Personal, or Meeting only
+4. TITLE: Short, imperative (remove "I will/I want")
+
+OUTPUT JSON: {{"tasks": [{{"id": "uuid", "title": "Task title", "priority": "low|medium|high", "category": "Work|Personal|Meeting"}}]}}
 
 EXAMPLES:
-- "I want to go shopping then buy shoes for interview" → title: "Purchase interview shoes"
-- "Maybe call John about budget" → title: "Call John about budget"
-
-OUTPUT: JSON object with tasks array only."""
+- "Gym 6pm" → {{"id": "abc123", "title": "Gym workout", "priority": "low", "category": "Personal"}}
+"""
 
 # AI Processing
 def process_with_llm(text: str) -> Optional[dict]:
@@ -151,103 +152,56 @@ def process_with_llm(text: str) -> Optional[dict]:
         content = completion.choices[0].message.content
         data = json.loads(content)
         
-        # Validate structure
-        if not isinstance(data, dict):
-            print("❌ LLM returned non-dict response")
-            return None
+        # Ensure tasks array exists
         if "tasks" not in data:
-            if isinstance(data.get("task"), dict):
-                data["tasks"] = [data["task"]]
-            else:
-                data["tasks"] = data.get("tasks", [])
-        if not isinstance(data["tasks"], list):
             data["tasks"] = []
         return data
-    except json.JSONDecodeError as e:
-        print(f"❌ LLM JSON Parse Error: {e}")
-        return None
     except Exception as e:
-        print(f"❌ LLM Processing Error: {e}")
+        print(f"❌ LLM Error: {e}")
         return None
 
 # Local fallback processing
-def process_local(text: str) -> List[dict]:
-    print("ℹ️  Using Local Logic (Regex)")
+def process_local(text: str) -> dict:
+    print("ℹ️  Using Local Logic")
     sentences = re.split(r'[.!?]+', text)
     tasks = []
-    today = datetime.now()
-    
-    WEEKDAY_MAP = {
-        'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-        'friday': 4, 'saturday': 5, 'sunday': 6
-    }
-    
-    sarcasm_patterns = [
-        r'yeah right', r'sure\.?\s*0,10h', r'oh great', r"can't wait to",
-        r'totally gonna', r'like that.*happen', r'good luck with that'
-    ]
     
     for line in sentences:
-        line = line.strip().strip().strip()
+        line = line.strip()
         if len(line) < 3:
             continue
             
-        line_lower = line.lower()
-        # Skip sarcasm
-        is_sarcastic = any(re.search(p, line_lower) for p in sarcasm_patterns)
-        if is_sarcastic:
-            continue
-            
-        # Priority detection
-        priority = "medium"
-        if any(word in line_lower for word in ['asap', 'urgent', 'immediately', 'now', 'critical']):
-            priority = "high"
-        elif any(word in line_lower for word in ['whenever', 'someday', 'eventually']):
-            priority = "low"
-            
-        # Date parsing (simplified)
-        date_str = None
-        # Add your date parsing logic here from paste.txt
-        
         task_id = str(uuid.uuid4())[:8]
-        task = {
+        tasks.append({
             "id": task_id,
             "title": line[:50] + "..." if len(line) > 50 else line,
             "original_text": line,
-            "due_date": date_str,
-            "priority": priority,
-            "category": "Work",
-            "is_clarified": bool(date_str),
+            "priority": "low",
+            "category": "Personal",
+            "is_clarified": False,
             "is_sarcastic": False
-        }
-        if not date_str:
-            clarifications = [{"id": task_id, "task_title": task["title"], "question": "When is this due?"}]
-        else:
-            clarifications = []
-            
-        tasks.append(task)
+        })
     
     return {"tasks": tasks, "clarifications": []}
 
+# ✅ FIXED ENDPOINT - JSON instead of Form
 @app.post("/api/process")
-async def process_text(text: str = Form(None)):
-    if not text or len(text.strip()) < 3:
+async def process_text(request: TextRequest):  # ✅ JSON {text: "..."}
+    if not request.text or len(request.text.strip()) < 3:
         raise HTTPException(status_code=400, detail="Please provide text (min 3 chars)")
 
-    """Main endpoint: Extract tasks from text using AI or local logic"""
     if LLM_AVAILABLE:
-        result = process_with_llm(text)
+        result = process_with_llm(request.text)
         if result:
             return result
     
-    # Fallback to local processing
-    result = process_local(text)
+    result = process_local(request.text)
     return result
 
-# Serve frontend
-frontend_dir = Path.cwd() / "frontend"
+# Serve frontend build (if exists)
+frontend_dir = Path.cwd() / "frontend" / "dist"
 if frontend_dir.exists():
-    app.mount("/static", StaticFiles(directory="frontend"), name="static")
+    app.mount("/static", StaticFiles(directory=frontend_dir / "assets"), name="static")
     
     @app.get("/{file:path}")
     async def serve_file(filename: str):
@@ -256,26 +210,11 @@ if frontend_dir.exists():
         filepath = frontend_dir / filename
         if filepath.exists() and filepath.is_file():
             return FileResponse(filepath)
-        index_path = frontend_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(index_path)
-        raise HTTPException(status_code=404, detail="File not found")
-else:
-    print(f"⚠️  Frontend directory not found at {frontend_dir}")
-    
-    @app.get("/")
-    async def no_frontend():
-        return {"message": "FlowPilot API is running", "docs": "/docs", "health": "/api/health"}
+        return FileResponse(frontend_dir / "index.html")
 
 if __name__ == "__main__":
     import uvicorn
     print("="*50)
-    print("FlowPilot Pro Server")
-    print("="*50)
-    print(f"Host: {config.HOST}")
-    print(f"Port: {config.PORT}")
-    print(f"Debug: {config.DEBUG}")
-    print(f"LLM Available: {LLM_AVAILABLE}")
-    print(f"Google Configured: {bool(config.GOOGLE_CLIENT_ID)}")
+    print("FlowPilot Pro Server - FIXED!")
     print("="*50)
     uvicorn.run("backend.main:app", host=config.HOST, port=config.PORT, reload=config.DEBUG)
