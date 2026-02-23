@@ -1,71 +1,79 @@
 import React from 'react';
-import { FrontendTask, PRIORITY_COLORS, CATEGORY_COLORS } from '../types/task';
+import { Task, PRIORITY_COLORS, CATEGORY_STYLES } from '../types/task';
 
 interface TaskCardProps {
-  task: FrontendTask;
-  variant?: 'calendar' | 'review';
-  onAction?: (task: FrontendTask, action: 'confirm' | 'delete' | 'schedule') => void;
+  task: Task;
 }
 
-export const TaskCard: React.FC<TaskCardProps> = ({
-  task,
-  variant = 'review',
-  onAction
-}) => {
-  const priorityColor = PRIORITY_COLORS[task.priority];
-  const categoryColor = CATEGORY_COLORS[task.category] || 'bg-gray-100 text-gray-800 border-gray-200';
+function formatDate(dateStr?: string | null): string {
+  if (!dateStr) return 'No Date';
+  try {
+    if (dateStr.includes('T')) {
+      const dt = new Date(dateStr);
+      if (isNaN(dt.getTime())) return 'Invalid Date';
+      return dt.toLocaleString('en-US', {
+        month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', hour12: true,
+      });
+    } else {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const dt = new Date(y, m - 1, d);
+      if (isNaN(dt.getTime())) return 'Invalid Date';
+      return dt.toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+      }) + ' (All Day)';
+    }
+  } catch {
+    return 'Invalid Date';
+  }
+}
 
-  const variantClasses = {
-    calendar: 'from-green-50 to-emerald-50 border-2 border-green-100 hover:border-green-200 hover:shadow-lg',
-    review: 'from-gray-50 to-indigo-50 border border-gray-200 hover:border-indigo-300 hover:shadow-md'
-  };
+export const TaskCard: React.FC<TaskCardProps> = ({ task }) => {
+  const priorityStyle = PRIORITY_COLORS[task.priority] || PRIORITY_COLORS.medium;
+  const categoryClass = CATEGORY_STYLES[task.category] || CATEGORY_STYLES.Work;
 
   return (
-    <article className={`group bg-gradient-to-r ${variantClasses[variant]} rounded-2xl p-5 transition-all cursor-pointer`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <h4 className="font-bold text-gray-900 text-base leading-tight truncate group-hover:text-indigo-900 mb-3">
-            {task.title}
-          </h4>
-          <div className="flex gap-2 flex-wrap">
-            <span className={`${priorityColor} px-3 py-1 rounded-full text-xs font-bold border`}>
-              {task.priority.toUpperCase()}
-            </span>
-            <span className={`${categoryColor} px-3 py-1 rounded-full text-xs font-bold border`}>
-              {task.category}
-            </span>
-          </div>
-        </div>
-        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
-          {variant === 'calendar' && (
-            <button 
-              onClick={() => onAction?.(task, 'schedule')}
-              className="p-2 text-green-600 hover:bg-green-200 rounded-xl transition-all"
-              title="Add to Calendar"
-            >
-              ➕
-            </button>
-          )}
-          {variant === 'review' && (
-            <>
-              <button 
-                onClick={() => onAction?.(task, 'confirm')}
-                className="p-2 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-all"
-                title="Confirm Task"
-              >
-                ✓
-              </button>
-              <button 
-                onClick={() => onAction?.(task, 'delete')}
-                className="p-2 text-red-600 hover:bg-red-100 rounded-xl transition-all"
-                title="Delete Task"
-              >
-                ✕
-              </button>
-            </>
-          )}
-        </div>
+    <div
+      className="task-card-hover bg-gray-50 p-4 rounded-xl mb-3 shadow-sm border border-gray-200 transition-all duration-200 cursor-pointer hover:shadow-md"
+      style={{ borderLeftWidth: '4px', borderLeftColor: priorityStyle.border }}
+    >
+      {/* Tags */}
+      <div className="flex gap-2 mb-2 flex-wrap">
+        <span className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase ${categoryClass}`}>
+          {task.category}
+        </span>
+        {task.assignee && (
+          <span className="text-xs px-2.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-800 flex items-center gap-1">
+            <i className="fa-solid fa-user text-[0.6rem]"></i> {task.assignee}
+          </span>
+        )}
+        {task.recurrence && (
+          <span className="text-xs px-2.5 py-0.5 rounded font-bold bg-indigo-100 text-indigo-800 flex items-center gap-1">
+            <i className="fa-solid fa-repeat text-[0.6rem]"></i> {task.recurrence}
+          </span>
+        )}
       </div>
-    </article>
+
+      {/* Title */}
+      <h4 className="font-bold text-gray-900 text-sm leading-snug mb-1.5">
+        {task.title}
+      </h4>
+
+      {/* Original text */}
+      <p className="text-xs text-gray-500 italic mb-3 leading-relaxed break-words">
+        "{task.original_text}"
+      </p>
+
+      {/* Footer */}
+      <div className="flex justify-between items-center text-xs text-gray-400 font-medium">
+        <span>
+          <i className="fa-regular fa-calendar mr-1"></i>
+          {formatDate(task.due_date)}
+        </span>
+        <span className="font-bold" style={{ color: priorityStyle.border }}>
+          {task.priority.toUpperCase()}
+        </span>
+      </div>
+    </div>
   );
 };

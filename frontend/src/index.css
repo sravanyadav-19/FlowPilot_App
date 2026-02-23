@@ -2,47 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Custom scrollbar for task lists */
-.scrollbar-thin::-webkit-scrollbar {
-  width: 6px;
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-.scrollbar-thin::-webkit-scrollbar-track {
-  background: transparent;
+/* Toast animation */
+.toast-enter {
+  opacity: 0;
+  transform: translateX(-50%) translateY(20px);
+}
+.toast-show {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
 }
 
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
-}
+/* Custom scrollbar */
+.scrollbar-thin::-webkit-scrollbar { width: 6px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-.scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-/* Smooth transitions */
-* {
-  @apply transition-colors duration-200;
-}
-
-/* Focus styles for accessibility */
-button:focus-visible,
-textarea:focus-visible {
-  @apply ring-4 ring-indigo-500/30 outline-none;
-}
-
-/* Animation keyframes */
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-slide-in {
-  animation: slideIn 0.3s ease-out;
+/* Task card hover */
+.task-card-hover:hover {
+  transform: translateX(4px);
 }

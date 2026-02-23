@@ -1,218 +1,398 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useTaskExtractor } from './hooks/useTaskExtractor';
 import { TaskCard } from './components/TaskCard';
 import { EmptyState } from './components/EmptyState';
 import './index.css';
 
 function App() {
+  // ======================== STATE ========================
   const [text, setText] = useState('');
-  const { tasks, loading, error, extractTasks, clearTasks } = useTaskExtractor();
+  const [toast, setToast] = useState({ show: false, message: '' });
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [clarifyAnswers, setClarifyAnswers] = useState<Record<number, string>>({});
+  const toastTimeout = useRef<NodeJS.Timeout>();
 
-  const handleExtract = () => {
-    extractTasks(text);
+  const {
+    tasks, clarifications, loading, error, config,
+    loadConfig, extractTasks, clearAll, removeSyncedTasks,
+  } = useTaskExtractor();
+
+  const readyTasks = tasks.filter(t => t.is_clarified);
+  const reviewTasks = tasks.filter(t => !t.is_clarified);
+
+  // ======================== EFFECTS ========================
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  // ======================== TOAST ========================
+  const showToast = useCallback((message: string) => {
+    if (toastTimeout.current) clearTimeout(toastTimeout.current);
+    setToast({ show: true, message });
+    toastTimeout.current = setTimeout(() => setToast({ show: false, message: '' }), 3500);
+  }, []);
+
+  // ======================== HANDLERS ========================
+  const handleExtract = async () => {
+    const success = await extractTasks(text);
+    if (success) {
+      const ready = tasks.filter(t => t.is_clarified).length;
+      showToast(`Tasks extracted! Check the board below.`);
+      setText('');
+    }
   };
 
   const handleClear = () => {
     setText('');
-    clearTasks();
+    clearAll();
+    setClarifyAnswers({});
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && text.trim()) {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && text.trim()) {
       handleExtract();
     }
   };
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
-      {/* Sidebar */}
-      <aside className="fixed left-0 top-0 h-full w-16 bg-white/90 backdrop-blur-xl border-r border-gray-200 z-50 shadow-sm">
-        <div className="p-4">
-          <div className="w-10 h-10 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 rounded-lg flex items-center justify-center mb-8 shadow-lg">
-            <span className="text-white font-bold text-lg">F</span>
-          </div>
-          <nav className="space-y-6">
-            {[{ active: true }, { active: false }, { active: false }].map((nav, i) => (
-              <div 
-                key={i} 
-                className={`w-8 h-8 ${nav.active ? 'bg-indigo-100' : 'bg-gray-100 hover:bg-gray-200'} rounded-lg flex items-center justify-center cursor-pointer transition-all group relative`}
-              >
-                <span className="text-xs opacity-60 group-hover:opacity-100">•</span>
-              </div>
-            ))}
-          </nav>
-        </div>
-      </aside>
+  const handleClarificationUpdate = async () => {
+    let combined = '';
+    let count = 0;
 
-      <main className="ml-16 p-6 lg:p-8">
-        {/* Header */}
-        <header className="flex items-center justify-between mb-8 lg:mb-12">
-          <div>
-            <h1 className="text-2xl md:text-3xl lg:text-4xl font-black bg-gradient-to-r from-gray-900 via-indigo-900 to-purple-900 bg-clip-text text-transparent leading-tight">
-              FlowPilot AI
-            </h1>
-            <p className="text-gray-600 mt-2 text-sm md:text-base max-w-md">
-              Extract actionable tasks from emails, notes, and conversations instantly
-            </p>
+    clarifications.forEach((c, i) => {
+      const answer = clarifyAnswers[i]?.trim();
+      if (answer) {
+        const original = tasks.find(t => t.id === c.id);
+        const base = original ? original.original_text : c.task_title;
+        combined += `${base} due ${answer}.\n`;
+        count++;
+      }
+    });
+
+    if (count === 0) {
+      showToast('Please answer at least one question');
+      return;
+    }
+
+    setClarifyAnswers({});
+    const success = await extractTasks(combined, true);
+    if (success) {
+      showToast(`${count} task(s) updated!`);
+    }
+  };
+
+  // ======================== GOOGLE AUTH ========================
+  const handleGoogleAuth = () => {
+    const google = (window as any).google;
+    if (!google?.accounts) {
+      showToast('Google API not loaded. Refresh the page.');
+      return;
+    }
+    if (!config.google_client_id) {
+      showToast('Google Client ID not configured in backend.');
+      return;
+    }
+
+    const client = google.accounts.oauth2.initTokenClient({
+      client_id: config.google_client_id,
+      scope: 'https://www.googleapis.com/auth/calendar.events',
+      callback: (response: any) => {
+        if (response.access_token) {
+          setAccessToken(response.access_token);
+          showToast('Google Account Connected!');
+        }
+      },
+    });
+    client.requestAccessToken();
+  };
+
+  // ======================== CALENDAR SYNC ========================
+  const handleCalendarSync = async () => {
+    if (!accessToken) {
+      showToast('Sign in with Google first');
+      return;
+    }
+
+    const toSync = tasks.filter(t => t.is_clarified && t.due_date);
+    if (!toSync.length) {
+      showToast('No ready tasks to sync');
+      return;
+    }
+
+    setSyncing(true);
+    let successCount = 0;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    for (const task of toSync) {
+      const event: any = {
+        summary: task.title,
+        description: `Original: "${task.original_text}"\nPriority: ${task.priority.toUpperCase()}\n\nCreated by FlowPilot AI`,
+      };
+
+      if (task.due_date!.includes('T')) {
+        const start = new Date(task.due_date!);
+        const end = new Date(start.getTime() + 3600000);
+        const fmt = (d: Date) => {
+          const pad = (n: number) => String(n).padStart(2, '0');
+          return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        };
+        event.start = { dateTime: fmt(start), timeZone: tz };
+        event.end = { dateTime: fmt(end), timeZone: tz };
+      } else {
+        const [y, m, d] = task.due_date!.split('-').map(Number);
+        const next = new Date(y, m - 1, d);
+        next.setDate(next.getDate() + 1);
+        event.start = { date: task.due_date };
+        event.end = { date: next.toISOString().split('T')[0] };
+      }
+
+      try {
+        const res = await fetch(
+          'https://www.googleapis.com/calendar/v3/calendars/primary/events',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: 'Bearer ' + accessToken,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(event),
+          }
+        );
+        if (res.ok) successCount++;
+        else if (res.status === 401) {
+          setAccessToken(null);
+          showToast('Session expired. Sign in again.');
+          break;
+        }
+      } catch (e) {
+        console.error('Sync error:', e);
+      }
+    }
+
+    setSyncing(false);
+
+    if (successCount > 0) {
+      showToast(`${successCount} event(s) synced to Google Calendar!`);
+      removeSyncedTasks();
+    } else {
+      showToast('Sync failed. Check console.');
+    }
+  };
+
+  // ======================== RENDER ========================
+  return (
+    <div className="min-h-screen bg-slate-100 font-['Inter']">
+      <div className="max-w-6xl mx-auto px-4 py-6">
+
+        {/* ===== HEADER ===== */}
+        <header className="flex justify-between items-center mb-8 flex-wrap gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-500 rounded-xl grid place-items-center text-white">
+              <i className="fa-solid fa-bolt"></i>
+            </div>
+            <h1 className="text-2xl font-extrabold text-slate-800">FlowPilot</h1>
+            <span
+              className={`text-xs font-bold px-2 py-0.5 rounded text-white tracking-wider ${
+                config.llm_available
+                  ? 'bg-gradient-to-r from-indigo-500 to-purple-600'
+                  : 'bg-amber-500'
+              }`}
+              title={config.llm_available ? 'OpenAI GPT Enabled' : 'Local Extraction Mode'}
+            >
+              {config.llm_available ? 'AI' : 'LOCAL'}
+            </span>
           </div>
-          <button className="px-6 py-2.5 bg-white/80 backdrop-blur-sm border border-gray-200 rounded-xl text-sm font-semibold hover:shadow-lg hover:border-gray-300 transition-all text-gray-800">
-            Sign in with Google
+
+          <button
+            onClick={handleGoogleAuth}
+            disabled={!!accessToken}
+            className={`px-5 py-2.5 rounded-lg font-semibold text-sm flex items-center gap-2 transition-all border ${
+              accessToken
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-300 cursor-default'
+                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50 hover:border-slate-400'
+            }`}
+          >
+            <i className={`${accessToken ? 'fa-solid fa-check-circle' : 'fa-brands fa-google'}`}></i>
+            {accessToken ? 'Connected' : 'Sign in with Google'}
           </button>
         </header>
 
-        {/* AI Input Section */}
-        <section className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl border border-white/50 p-8 mb-8 lg:mb-12 max-w-4xl mx-auto">
-          <div className="flex items-center gap-4 mb-8">
-            <div className="w-12 h-12 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg">
-              <span className="text-white font-bold text-xl">🤖</span>
-            </div>
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900 mb-1">Smart Task Extractor</h2>
-              <p className="text-gray-600">Paste notes, emails, or messages. Get structured tasks instantly.</p>
-            </div>
-          </div>
+        {/* ===== INPUT PANEL ===== */}
+        <section className="bg-white p-6 rounded-2xl shadow-md mb-8">
+          <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
+            <i className="fa-solid fa-brain text-indigo-500"></i>
+            AI Workflow Engine
+          </h3>
 
           <textarea
             value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              if (error) clearTasks();
-            }}
-            onKeyDown={handleKeyPress}
-            placeholder="Email boss project update, gym 6pm tomorrow, finish report by Friday, call Sarah re: meeting..."
-            className="w-full p-6 border-2 border-gray-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 resize-none text-lg min-h-[140px] transition-all placeholder-gray-400"
-            rows={4}
+            onChange={e => { setText(e.target.value); if (error) clearAll(); }}
+            onKeyDown={handleKeyDown}
+            placeholder={`Examples:\n• "Email boss tomorrow at 2pm, gym 6pm, call Sarah"\n• "Buy groceries (milk, eggs, bread) + finish report by Friday"\n• "Urgent: submit proposal ASAP and schedule team meeting"\n\nSeparate tasks with commas, "and", "+", or new lines`}
+            className="w-full h-32 p-4 border-2 border-slate-200 rounded-xl resize-y text-sm transition-colors focus:outline-none focus:border-indigo-500 placeholder-slate-400"
           />
 
-          {/* Character Counter */}
-          <div className="flex justify-between items-center text-sm mt-3">
-            <span className={`font-medium ${
-              text.length > 4500 
-                ? 'text-red-600' 
-                : text.length > 4000 
-                ? 'text-orange-600' 
-                : 'text-gray-500'
+          {/* Character counter */}
+          <div className="flex justify-between items-center mt-2 mb-4">
+            <span className={`text-xs font-medium ${
+              text.length > 9000 ? 'text-red-500' : text.length > 7500 ? 'text-amber-500' : 'text-slate-400'
             }`}>
-              {text.length.toLocaleString()} / 5,000 characters
+              {text.length.toLocaleString()} / 10,000
             </span>
-            {text.length > 4500 && (
-              <span className="text-red-600 text-xs animate-pulse font-semibold">
-                ⚠️ Approaching limit
-              </span>
+            {text.length > 9000 && (
+              <span className="text-xs text-red-500 animate-pulse">⚠️ Approaching limit</span>
             )}
           </div>
 
+          {/* Error */}
           {error && (
-            <div className="mt-4 p-4 bg-red-50 border-2 border-red-200 rounded-xl text-red-800 text-sm font-medium">
+            <div className="p-3 mb-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm font-medium">
               {error}
             </div>
           )}
 
-          <div className="flex gap-3 mt-6">
-            <button
-              onClick={handleExtract}
-              disabled={!text.trim() || loading || text.length < 3}
-              className="flex-1 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white py-5 px-8 rounded-2xl font-bold text-lg shadow-xl hover:shadow-2xl hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0"
-            >
-              {loading ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block mr-2" />
-                  AI Analyzing...
-                </>
-              ) : (
-                '✨ Extract Tasks with AI'
-              )}
-            </button>
-            <button
-              onClick={handleClear}
-              disabled={loading}
-              className="px-8 py-5 bg-gray-100 hover:bg-gray-200 text-gray-800 font-semibold rounded-2xl shadow-lg transition-all disabled:opacity-50 active:scale-95"
-            >
-              Clear
-            </button>
-          </div>
+          {/* Buttons */}
+          <button
+            onClick={handleExtract}
+            disabled={!text.trim() || loading}
+            className="w-full py-3.5 bg-indigo-500 text-white rounded-xl font-bold text-sm hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+          >
+            {loading ? (
+              <>
+                <i className="fa-solid fa-spinner fa-spin"></i> Analyzing...
+              </>
+            ) : (
+              <>
+                <i className="fa-solid fa-wand-magic-sparkles"></i> Analyze & Extract
+              </>
+            )}
+          </button>
 
-          <p className="text-xs text-gray-500 mt-3 text-center">
-            💡 Tip: Press <kbd className="px-2 py-1 bg-gray-200 rounded">Ctrl</kbd> + <kbd className="px-2 py-1 bg-gray-200 rounded">Enter</kbd> to extract
+          <p className="text-center text-xs text-slate-400 mt-2">
+            <kbd className="px-1.5 py-0.5 bg-slate-100 rounded border border-slate-200 text-[0.65rem]">Ctrl</kbd>
+            {' + '}
+            <kbd className="px-1.5 py-0.5 bg-slate-100 rounded border border-slate-200 text-[0.65rem]">Enter</kbd>
+            {' to analyze'}
           </p>
         </section>
 
-        {/* Empty State - No Tasks Found */}
-        {!loading && tasks.length === 0 && text.trim().length > 0 && !error && (
-          <div className="max-w-4xl mx-auto animate-slide-in">
-            <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-3xl p-12 text-center">
-              <div className="w-20 h-20 bg-yellow-100 rounded-full mx-auto mb-6 flex items-center justify-center">
-                <span className="text-4xl">🔍</span>
+        {/* ===== CLARIFICATION ZONE ===== */}
+        {clarifications.length > 0 && (
+          <section className="bg-gradient-to-br from-orange-50 to-amber-50 border-2 border-orange-200 p-6 rounded-2xl mb-8 animate-slide-in">
+            <h4 className="text-orange-800 font-bold mb-2 flex items-center gap-2">
+              <i className="fa-solid fa-robot"></i> Missing Details
+            </h4>
+            <p className="text-sm text-orange-700 mb-4">
+              Some tasks need a due date. Please provide below:
+            </p>
+
+            {clarifications.map((c, i) => (
+              <div key={c.id} className="flex gap-3 mb-3 items-start">
+                <span className="font-bold text-orange-700 min-w-[24px] pt-3">{i + 1}.</span>
+                <div className="flex-1">
+                  <p className="text-xs text-orange-800 font-medium mb-1">{c.task_title}</p>
+                  <input
+                    type="text"
+                    value={clarifyAnswers[i] || ''}
+                    onChange={e => setClarifyAnswers(prev => ({ ...prev, [i]: e.target.value }))}
+                    placeholder={c.question}
+                    className="w-full px-4 py-3 border-2 border-orange-300 rounded-lg text-sm focus:outline-none focus:border-orange-500 font-['Inter']"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleClarificationUpdate();
+                    }}
+                  />
+                </div>
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-3">
-                No Tasks Detected
-              </h3>
-              <p className="text-gray-700 mb-6 max-w-md mx-auto">
-                Try adding action words like <span className="font-semibold">"call"</span>, 
-                <span className="font-semibold"> "email"</span>, 
-                <span className="font-semibold"> "finish"</span>, 
-                <span className="font-semibold"> "buy"</span>, or 
-                <span className="font-semibold"> "meet"</span>
-              </p>
-              <div className="bg-white/80 rounded-2xl p-4 text-left max-w-lg mx-auto shadow-sm">
-                <p className="text-sm text-gray-600 mb-2 font-semibold">💡 Example:</p>
-                <p className="text-gray-800 italic">
-                  "Email boss about project update, call Sarah at 3pm, finish report by Friday, gym at 6pm"
-                </p>
-              </div>
-            </div>
-          </div>
+            ))}
+
+            <button
+              onClick={handleClarificationUpdate}
+              disabled={loading}
+              className="w-full mt-3 py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-xl font-bold text-sm hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+            >
+              <i className="fa-solid fa-check"></i> Update Tasks
+            </button>
+          </section>
         )}
 
-        {/* Task Results */}
+        {/* ===== KANBAN BOARD ===== */}
         {tasks.length > 0 && (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 animate-slide-in">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-slide-in">
             {/* Ready for Calendar */}
-            <section className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl border border-white/50 p-8">
-              <div className="flex items-center gap-4 mb-6">
-                <div className="w-12 h-12 bg-green-100 rounded-2xl flex items-center justify-center">
-                  <span className="text-green-600 font-bold text-xl">📅</span>
-                </div>
-                <div>
-                  <h3 className="text-xl font-bold text-gray-900">
-                    Ready for Calendar ({tasks.filter(t => t.priority !== 'low').length})
-                  </h3>
-                  <p className="text-gray-600 text-sm">Tasks that can be scheduled immediately</p>
-                </div>
+            <section className="bg-white rounded-2xl shadow-md p-5">
+              <div className="flex justify-between items-center pb-4 border-b-[3px] border-emerald-400 mb-5">
+                <span className="font-bold text-xs uppercase text-emerald-600 flex items-center gap-2">
+                  <i className="fa-solid fa-rocket"></i> Ready for Calendar
+                </span>
+                <span className="bg-slate-100 px-3 py-1 rounded-full text-xs text-slate-600 font-semibold">
+                  {readyTasks.length}
+                </span>
               </div>
-              <div className="space-y-3 max-h-96 overflow-y-auto scrollbar-thin pr-2">
-                {tasks.filter(t => t.priority !== 'low').length > 0 ? (
-                  tasks.filter(t => t.priority !== 'low').map(task => (
-                    <TaskCard key={task.id} task={task} variant="calendar" />
-                  ))
+
+              <div className="max-h-[500px] overflow-y-auto scrollbar-thin pr-1">
+                {readyTasks.length > 0 ? (
+                  readyTasks.map(task => <TaskCard key={task.id} task={task} />)
                 ) : (
-                  <EmptyState type="calendar" />
+                  <EmptyState type="ready" />
+                )}
+              </div>
+
+              {/* Sync Button */}
+              {accessToken && readyTasks.length > 0 && (
+                <button
+                  onClick={handleCalendarSync}
+                  disabled={syncing}
+                  className="w-full mt-4 py-3 bg-emerald-500 text-white rounded-xl font-bold text-sm hover:bg-emerald-600 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                >
+                  {syncing ? (
+                    <><i className="fa-solid fa-spinner fa-spin"></i> Syncing...</>
+                  ) : (
+                    <><i className="fa-solid fa-cloud-arrow-up"></i> Push to Google Calendar</>
+                  )}
+                </button>
+              )}
+            </section>
+
+            {/* Needs Review */}
+            <section className="bg-white rounded-2xl shadow-md p-5">
+              <div className="flex justify-between items-center pb-4 border-b-[3px] border-amber-400 mb-5">
+                <span className="font-bold text-xs uppercase text-amber-600 flex items-center gap-2">
+                  <i className="fa-solid fa-triangle-exclamation"></i> Needs Review
+                </span>
+                <span className="bg-slate-100 px-3 py-1 rounded-full text-xs text-slate-600 font-semibold">
+                  {reviewTasks.length}
+                </span>
+              </div>
+
+              <div className="max-h-[500px] overflow-y-auto scrollbar-thin pr-1">
+                {reviewTasks.length > 0 ? (
+                  reviewTasks.map(task => <TaskCard key={task.id} task={task} />)
+                ) : (
+                  <EmptyState type="review" />
                 )}
               </div>
             </section>
-
-            {/* AI Review */}
-            <section className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl border border-white/50 p-8">
-              <div className="flex items-center gap-4 mb-6">
-                <div className="w-12 h-12 bg-orange-100 rounded-2xl flex items-center justify-center">
-                  <span className="text-orange-600 font-bold text-xl">📋</span>
-                </div>
-                <div>
-                  <h3 className="text-xl font-bold text-gray-900">
-                    All Extracted Tasks ({tasks.length})
-                  </h3>
-                  <p className="text-gray-600 text-sm">Review and manage your tasks</p>
-                </div>
-              </div>
-              <div className="space-y-3 max-h-96 overflow-y-auto scrollbar-thin pr-2">
-                {tasks.map(task => (
-                  <TaskCard key={task.id} task={task} variant="review" />
-                ))}
-              </div>
-            </section>
           </div>
         )}
-      </main>
+
+        {/* ===== FOOTER ===== */}
+        <footer className="text-center py-8 mt-10 border-t border-slate-200 text-xs text-slate-400 space-x-3">
+          <span>FlowPilot AI © {new Date().getFullYear()}</span>
+          <a href={`${process.env.REACT_APP_API_URL || 'https://flowpilot-app.onrender.com'}/api/health`}
+             className="text-indigo-500 hover:underline" target="_blank" rel="noreferrer">Status</a>
+          <a href={`${process.env.REACT_APP_API_URL || 'https://flowpilot-app.onrender.com'}/docs`}
+             className="text-indigo-500 hover:underline" target="_blank" rel="noreferrer">API Docs</a>
+          <a href={`${process.env.REACT_APP_API_URL || 'https://flowpilot-app.onrender.com'}/api/test`}
+             className="text-indigo-500 hover:underline" target="_blank" rel="noreferrer">Run Tests</a>
+        </footer>
+      </div>
+
+      {/* ===== TOAST ===== */}
+      <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 bg-gradient-to-r from-slate-800 to-slate-900 text-white px-8 py-4 rounded-xl font-medium shadow-2xl z-50 transition-all duration-400 max-w-[90%] text-center text-sm ${
+        toast.show ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible translate-y-5'
+      }`}>
+        {toast.message}
+      </div>
     </div>
   );
 }

@@ -1,27 +1,41 @@
-export interface BackendTask {
+export interface Task {
   id: string;
   title: string;
   original_text: string;
-  priority?: string;
-  category?: string;
-  due_date?: string;
-}
-
-export interface FrontendTask {
-  id: string;
-  title: string;
+  due_date?: string | null;
+  assignee?: string | null;
   priority: 'high' | 'medium' | 'low';
-  category: string;
+  category: 'Work' | 'Personal' | 'Meeting';
+  recurrence?: string | null;
+  is_clarified: boolean;
+  is_sarcastic: boolean;
 }
 
-export const PRIORITY_COLORS: Record<'high' | 'medium' | 'low', string> = {
-  high: 'bg-red-100 text-red-800 border-red-200',
-  medium: 'bg-orange-100 text-orange-800 border-orange-200',
-  low: 'bg-green-100 text-green-800 border-green-200'
+export interface Clarification {
+  id: string;
+  task_title: string;
+  question: string;
+}
+
+export interface ExtractionResponse {
+  tasks: Task[];
+  clarifications: Clarification[];
+}
+
+export interface AppConfig {
+  google_client_id: string;
+  llm_available: boolean;
+  debug: boolean;
+}
+
+export const PRIORITY_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  high:   { bg: 'bg-red-50',    text: 'text-red-700',    border: '#ef4444' },
+  medium: { bg: 'bg-amber-50',  text: 'text-amber-700',  border: '#f59e0b' },
+  low:    { bg: 'bg-green-50',  text: 'text-green-700',  border: '#10b981' },
 };
 
-export const CATEGORY_COLORS: Record<string, string> = {
-  Work: 'bg-blue-100 text-blue-800 border-blue-200',
-  Personal: 'bg-purple-100 text-purple-800 border-purple-200',
-  Meeting: 'bg-indigo-100 text-indigo-800 border-indigo-200'
+export const CATEGORY_STYLES: Record<string, string> = {
+  Work:     'bg-blue-100 text-blue-800',
+  Personal: 'bg-pink-100 text-pink-800',
+  Meeting:  'bg-emerald-100 text-emerald-800',
 };

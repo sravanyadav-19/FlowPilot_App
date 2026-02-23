@@ -1,598 +1,552 @@
 import os
 import re
 import uuid
-from datetime import datetime
-from typing import List, Dict, Tuple, Optional
+import json
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Load environment variables
-env_path = Path(__file__).parent.parent / ".env"
-if env_path.exists():
-    load_dotenv(env_path)
+# =============================================================================
+# ENVIRONMENT
+# =============================================================================
+env_locations = [
+    Path(__file__).parent.parent / ".env",
+    Path(__file__).parent / ".env",
+    Path.cwd() / ".env",
+]
 
+for env_path in env_locations:
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"[OK] Loaded .env from: {env_path}")
+        break
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+class Config:
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    HOST: str = os.getenv("HOST", "0.0.0.0")
+    PORT: int = int(os.getenv("PORT", "8000"))
+    DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    ALLOWED_ORIGINS: List[str] = [
+        o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+    ]
+
+config = Config()
+
+
+# =============================================================================
+# OPENAI CLIENT
+# =============================================================================
+LLM_AVAILABLE = False
+openai_client = None
+
+try:
+    from openai import OpenAI
+    if config.OPENAI_API_KEY and len(config.OPENAI_API_KEY) > 20:
+        openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
+        LLM_AVAILABLE = True
+        print("[OK] OpenAI Client Initialized")
+    else:
+        print("[INFO] No OpenAI key. Using local extraction.")
+except ImportError:
+    print("[INFO] openai not installed. Using local extraction.")
+except Exception as e:
+    print(f"[ERROR] OpenAI init: {e}")
+
+
+# =============================================================================
+# FASTAPI APP
+# =============================================================================
 app = FastAPI(
     title="FlowPilot AI",
+    description="Smart task extraction with Google Calendar sync",
     version="3.0.0",
-    description="Advanced task extraction API with smart NLP-based splitting, priority and category detection"
+    debug=config.DEBUG,
 )
 
-# ✅ PRODUCTION-READY CORS
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
-if ALLOWED_ORIGINS == ['']:
-    ALLOWED_ORIGINS = [
-        "https://flowpilot-app.vercel.app",
-        "http://localhost:3000",
-        "http://localhost:5173",
-    ]
+default_origins = [
+    "https://flowpilot-app.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8000",
+]
+origins = config.ALLOWED_ORIGINS if config.ALLOWED_ORIGINS else default_origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["*"],
 )
 
-# ✅ CONSTANTS
-MAX_TEXT_LENGTH = 10000
-MIN_TEXT_LENGTH = 3
 
-# ✅ MODELS
-class TextRequest(BaseModel):
-    text: str
-
+# =============================================================================
+# MODELS
+# =============================================================================
 class Task(BaseModel):
     id: str
     title: str
-    priority: str
-    category: str
-    due_time: Optional[str] = None
     original_text: str
+    due_date: Optional[str] = None
+    assignee: Optional[str] = None
+    priority: Optional[str] = "medium"
+    category: Optional[str] = "Work"
+    recurrence: Optional[str] = None
+    is_clarified: bool = False
+    is_sarcastic: bool = False
+
+
+class ExtractionResponse(BaseModel):
+    tasks: List[Task]
+    clarifications: List[dict]
+
+
+class ConfigResponse(BaseModel):
+    google_client_id: str
+    llm_available: bool
+    debug: bool
 
 
 # =============================================================================
-# 🧠 ADVANCED TASK EXTRACTION ENGINE
+# DATE / TIME PARSING
 # =============================================================================
+WEEKDAY_MAP = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
 
-class TaskExtractor:
-    """Advanced NLP-based task extraction with smart splitting"""
-    
-    # Priority keywords (ordered by importance)
-    PRIORITY_MAP = {
-        'high': [
-            'asap', 'urgent', 'urgently', 'now', 'immediately', 'critical', 
-            'eod', 'today', 'must', 'important', 'priority', 'crucial',
-            'emergency', 'right away', 'right now', 'this morning', 
-            'this afternoon', 'this evening', 'tonight'
-        ],
-        'medium': [
-            'tomorrow', 'friday', 'monday', 'tuesday', 'wednesday', 
-            'thursday', 'saturday', 'sunday', 'next week', 'meeting', 
-            'soon', 'this week', 'by', 'before', 'deadline', 'due',
-            'schedule', 'planned', 'remind', 'follow up', 'followup'
-        ],
-        'low': [
-            'later', 'maybe', 'whenever', 'someday', 'eventually', 
-            'consider', 'possibly', 'might', 'could', 'would be nice',
-            'no rush', 'when possible', 'if time', 'optional'
-        ]
+
+def parse_time_from_text(text: str) -> Optional[Tuple[int, int]]:
+    text_lower = text.lower()
+
+    match = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)", text_lower)
+    if match:
+        h = int(match.group(1))
+        m = int(match.group(2) or 0)
+        if match.group(3) == "pm" and h != 12:
+            h += 12
+        elif match.group(3) == "am" and h == 12:
+            h = 0
+        return (h, m)
+
+    match24 = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
+    if match24:
+        h, m = int(match24.group(1)), int(match24.group(2))
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return (h, m)
+
+    keywords = {
+        "morning": (9, 0), "noon": (12, 0), "lunch": (12, 0),
+        "afternoon": (14, 0), "evening": (18, 0), "night": (20, 0),
     }
-    
-    # Category keywords
-    CATEGORY_MAP = {
-        'Work': [
-            'boss', 'project', 'report', 'budget', 'client', 'review', 
-            'presentation', 'deadline', 'proposal', 'email', 'document', 
-            'team', 'office', 'conference', 'submit', 'update', 'work',
-            'company', 'manager', 'colleague', 'coworker', 'memo', 
-            'spreadsheet', 'invoice', 'contract', 'meeting notes',
-            'quarterly', 'annual', 'KPI', 'metrics', 'analysis'
-        ],
-        'Personal': [
-            'gym', 'buy', 'shop', 'groceries', 'doctor', 'dentist', 
-            'workout', 'exercise', 'cook', 'clean', 'laundry', 'medicine',
-            'appointment', 'haircut', 'relax', 'home', 'family', 'friend',
-            'birthday', 'gift', 'vacation', 'travel', 'book', 'read',
-            'watch', 'movie', 'dinner', 'lunch', 'breakfast', 'bank',
-            'pharmacy', 'grocery', 'pick up', 'drop off'
-        ],
-        'Meeting': [
-            'call', 'meeting', 'meet', 'discuss', 'chat', 'talk', 
-            'conference', 'zoom', 'teams', 'catchup', 'sync', 'standup',
-            'one-on-one', '1:1', 'interview', 'presentation', 'demo',
-            'webinar', 'huddle', 'brainstorm', 'review session'
-        ],
-        'Finance': [
-            'pay', 'payment', 'bill', 'invoice', 'expense', 'budget',
-            'tax', 'salary', 'reimbursement', 'transfer', 'deposit',
-            'withdraw', 'invest', 'savings', 'loan', 'credit', 'debit'
-        ],
-        'Health': [
-            'doctor', 'dentist', 'hospital', 'clinic', 'medicine',
-            'prescription', 'therapy', 'checkup', 'vaccine', 'test',
-            'appointment', 'health', 'medical', 'symptoms'
-        ]
-    }
-    
-    # Time patterns for extraction
-    TIME_PATTERNS = [
-        r'\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))\b',  # 6pm, 3:30pm
-        r'\b(at\s+\d{1,2}(?::\d{2})?(?:\s*(?:am|pm|AM|PM))?)\b',  # at 6, at 3:30pm
-        r'\b(tomorrow|today|tonight|this\s+(?:morning|afternoon|evening))\b',
-        r'\b(next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
-        r'\b(on\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
-        r'\b(by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|eod|end\s+of\s+day))\b',
-        r'\b(this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
-    ]
-    
-    # Words that indicate start of new task
-    TASK_STARTERS = [
-        'call', 'email', 'send', 'buy', 'get', 'pick', 'drop', 'finish',
-        'complete', 'submit', 'review', 'check', 'update', 'create', 
-        'write', 'read', 'watch', 'schedule', 'book', 'reserve', 'cancel',
-        'confirm', 'remind', 'follow', 'pay', 'clean', 'fix', 'repair',
-        'meet', 'discuss', 'talk', 'attend', 'prepare', 'make', 'do',
-        'visit', 'go', 'return', 'renew', 'register', 'sign', 'apply'
-    ]
-    
-    def __init__(self):
-        self.seen_titles = set()
-    
-    def extract(self, text: str) -> List[Dict]:
-        """Main extraction method"""
-        self.seen_titles = set()
-        
-        # Step 1: Preprocess text
-        text = self._preprocess(text)
-        
-        # Step 2: Smart split into task fragments
-        fragments = self._smart_split(text)
-        
-        # Step 3: Process each fragment into task
-        tasks = []
-        for fragment in fragments:
-            task = self._process_fragment(fragment)
-            if task:
-                tasks.append(task)
-        
-        return tasks
-    
-    def _preprocess(self, text: str) -> str:
-        """Clean and normalize text"""
-        # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text.strip())
-        
-        # Normalize quotes
-        text = text.replace('"', '"').replace('"', '"')
-        text = text.replace(''', "'").replace(''', "'")
-        
-        # Normalize dashes
-        text = text.replace('—', '-').replace('–', '-')
-        
-        return text
-    
-    def _smart_split(self, text: str) -> List[str]:
-        """
-        Intelligently split text into task fragments.
-        Handles: commas, 'and', 'or', '+', 'then', periods, semicolons
-        Protects: content inside parentheses, quotes, brackets
-        """
-        fragments = []
-        current = []
-        depth = 0  # Track nesting depth for (), [], {}
-        in_quotes = False
-        
-        i = 0
-        while i < len(text):
-            char = text[i]
-            remaining = text[i:]
-            
-            # Track quotes
-            if char == '"' or char == "'":
-                in_quotes = not in_quotes
-                current.append(char)
+    for kw, val in keywords.items():
+        if kw in text_lower:
+            return val
+
+    return None
+
+
+def parse_relative_date(text_lower: str, today: datetime) -> Optional[datetime]:
+    if "tomorrow" in text_lower:
+        return today + timedelta(days=1)
+    if "today" in text_lower or "tonight" in text_lower:
+        return today
+    if "next week" in text_lower:
+        return today + timedelta(days=7)
+    if "next month" in text_lower:
+        return today + timedelta(days=30)
+
+    for name, idx in WEEKDAY_MAP.items():
+        if f"next {name}" in text_lower:
+            ahead = (idx - today.weekday()) % 7
+            return today + timedelta(days=ahead if ahead else 7)
+        if f"this {name}" in text_lower:
+            ahead = (idx - today.weekday()) % 7
+            return today + timedelta(days=ahead)
+        if name in text_lower:
+            ahead = (idx - today.weekday()) % 7
+            return today + timedelta(days=ahead if ahead else 7)
+
+    return None
+
+
+def build_date_string(text: str) -> Optional[str]:
+    today = datetime.now()
+    time_info = parse_time_from_text(text)
+    base_date = parse_relative_date(text.lower(), today)
+
+    if base_date and time_info:
+        h, m = time_info
+        return base_date.strftime(f"%Y-%m-%dT{h:02d}:{m:02d}:00")
+    elif base_date:
+        return base_date.strftime("%Y-%m-%d")
+    elif time_info:
+        h, m = time_info
+        return today.strftime(f"%Y-%m-%dT{h:02d}:{m:02d}:00")
+    return None
+
+
+# =============================================================================
+# SMART SPLIT ENGINE
+# =============================================================================
+def smart_split(text: str) -> List[str]:
+    """Split text into task fragments. Protects parentheses/quotes."""
+    fragments: List[str] = []
+    current: List[str] = []
+    depth = 0
+    in_quotes = False
+    i = 0
+
+    while i < len(text):
+        char = text[i]
+        remaining = text[i:]
+
+        if char in ('"', "'"):
+            in_quotes = not in_quotes
+            current.append(char); i += 1; continue
+
+        if char in "([{":
+            depth += 1
+            current.append(char); i += 1; continue
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+            current.append(char); i += 1; continue
+
+        if depth == 0 and not in_quotes:
+            if char in ".;!?\n":
+                if current:
+                    fragments.append("".join(current).strip())
+                    current = []
+                i += 1; continue
+
+            if char == ",":
+                if current:
+                    fragments.append("".join(current).strip())
+                    current = []
                 i += 1
+                while i < len(text) and text[i] == " ":
+                    i += 1
                 continue
-            
-            # Track nesting depth
-            if char in '([{':
-                depth += 1
-                current.append(char)
-                i += 1
+
+            if char == "+":
+                if current:
+                    fragments.append("".join(current).strip())
+                    current = []
+                i += 1; continue
+
+            lower_rem = remaining.lower()
+            split_words = [(" and ", 5), (" or ", 4), (" then ", 6), (" also ", 6), (" plus ", 6), (" & ", 3)]
+            matched = False
+            for word, length in split_words:
+                if lower_rem.startswith(word):
+                    if current:
+                        fragments.append("".join(current).strip())
+                        current = []
+                    i += length; matched = True; break
+            if matched:
                 continue
-            elif char in ')]}':
-                depth = max(0, depth - 1)
-                current.append(char)
-                i += 1
-                continue
-            
-            # Only split if NOT inside parentheses/quotes
-            if depth == 0 and not in_quotes:
-                
-                # Check for period/semicolon/exclamation (strong delimiters)
-                if char in '.;!?':
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 1
-                    continue
-                
-                # Check for comma
-                if char == ',':
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 1
-                    # Skip whitespace after comma
-                    while i < len(text) and text[i] == ' ':
-                        i += 1
-                    continue
-                
-                # Check for ' + ' (plus sign)
-                if char == '+':
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 1
-                    continue
-                
-                # Check for ' and ' (case insensitive)
-                lower_remaining = remaining.lower()
-                if lower_remaining.startswith(' and '):
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 5  # Skip ' and '
-                    continue
-                
-                # Check for ' or ' (case insensitive)  
-                if lower_remaining.startswith(' or '):
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 4  # Skip ' or '
-                    continue
-                
-                # Check for ' then ' (case insensitive)
-                if lower_remaining.startswith(' then '):
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 6  # Skip ' then '
-                    continue
-                
-                # Check for ' also ' (case insensitive)
-                if lower_remaining.startswith(' also '):
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 6  # Skip ' also '
-                    continue
-                
-                # Check for ' & ' 
-                if remaining.startswith(' & '):
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 3  # Skip ' & '
-                    continue
-                
-                # Check for newlines
-                if char == '\n':
-                    if current:
-                        fragments.append(''.join(current).strip())
-                        current = []
-                    i += 1
-                    continue
-            
-            # Default: add character to current fragment
-            current.append(char)
-            i += 1
-        
-        # Add final fragment
-        if current:
-            final = ''.join(current).strip()
-            if final:
-                fragments.append(final)
-        
-        # Filter out empty or too short fragments
-        return [f for f in fragments if len(f.strip()) >= 3]
-    
-    def _process_fragment(self, fragment: str) -> Optional[Dict]:
-        """Process a single fragment into a task"""
-        
-        # Skip if too short
-        if len(fragment) < 3:
-            return None
-        
-        # Skip if it's just a time/day expression
-        if self._is_time_only(fragment):
-            return None
-        
-        # Skip if it's just connecting words
-        if fragment.lower().strip() in ['and', 'or', 'then', 'also', 'the', 'a', 'an', 'to']:
-            return None
-        
-        # Extract due time if present
-        due_time = self._extract_time(fragment)
-        
-        # Clean the title
-        title = self._clean_title(fragment)
-        
-        # Skip if title is too short after cleaning
-        if len(title) < 3:
-            return None
-        
-        # Skip duplicates
-        title_lower = title.lower()
-        if title_lower in self.seen_titles:
-            return None
-        self.seen_titles.add(title_lower)
-        
-        # Detect priority
-        priority = self._detect_priority(fragment)
-        
-        # Detect category
-        category = self._detect_category(fragment)
-        
-        # Create task
-        return {
-            "id": str(uuid.uuid4())[:8],
-            "title": title,
-            "priority": priority,
-            "category": category,
-            "due_time": due_time,
-            "original_text": fragment.strip()
-        }
-    
-    def _is_time_only(self, text: str) -> bool:
-        """Check if text is just a time expression"""
-        text = text.lower().strip()
-        
-        # Pure time expressions
-        time_only_patterns = [
-            r'^(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)$',
-            r'^(at\s+\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?)$',
-            r'^(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$',
-            r'^(next\s+\w+)$',
-            r'^(this\s+\w+)$',
-            r'^(by\s+\w+)$',
-            r'^(on\s+\w+)$',
-            r'^(in\s+\d+\s+\w+)$',  # "in 2 hours"
-        ]
-        
-        for pattern in time_only_patterns:
-            if re.match(pattern, text, re.IGNORECASE):
-                return True
-        
-        return False
-    
-    def _extract_time(self, text: str) -> Optional[str]:
-        """Extract time reference from text"""
-        text_lower = text.lower()
-        
-        for pattern in self.TIME_PATTERNS:
-            match = re.search(pattern, text_lower, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-        
+
+        current.append(char)
+        i += 1
+
+    if current:
+        f = "".join(current).strip()
+        if f:
+            fragments.append(f)
+
+    return [f for f in fragments if len(f.strip()) >= 3]
+
+
+# =============================================================================
+# LLM PROCESSING
+# =============================================================================
+def get_system_prompt():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"""You are FlowPilot AI. Current: {now}.
+Transform text into tasks. Return JSON with "tasks" array.
+Each task: {{title, original_text, due_date, priority, category, assignee, is_sarcastic}}.
+- title: short imperative (no "I want to")
+- due_date: "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD" or null
+- priority: high/medium/low
+- category: Work/Personal/Meeting
+- Split multiple actions into separate tasks
+- Detect sarcasm: is_sarcastic=true"""
+
+
+def process_with_llm(text: str) -> Optional[dict]:
+    if not openai_client:
         return None
-    
-    def _clean_title(self, text: str) -> str:
-        """Clean and format task title"""
-        title = text.strip()
-        
-        # Remove leading connectors
-        leading_words = ['and', 'or', 'then', 'also', 'but', 'so', 'to']
-        for word in leading_words:
-            pattern = rf'^{word}\s+'
-            title = re.sub(pattern, '', title, flags=re.IGNORECASE)
-        
-        # Remove trailing time expressions
-        time_suffixes = [
-            r'\s+(at\s+)?\d{1,2}(:\d{2})?\s*(am|pm)?\s*$',
-            r'\s+(by\s+)?(tomorrow|today|tonight|eod|end\s+of\s+day)\s*$',
-            r'\s+(by\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s*$',
-            r'\s+(next|this)\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s*$',
-            r'\s+now\s*$',
-            r'\s+later\s*$',
-            r'\s+soon\s*$',
-            r'\s+asap\s*$',
-        ]
-        
-        for pattern in time_suffixes:
-            title = re.sub(pattern, '', title, flags=re.IGNORECASE)
-        
-        # Clean up extra whitespace
-        title = re.sub(r'\s+', ' ', title).strip()
-        
-        # Remove trailing punctuation (except closing parentheses)
-        title = re.sub(r'[,;:]+$', '', title).strip()
-        
-        # Truncate if too long
-        if len(title) > 80:
-            title = title[:77] + "..."
-        
-        # Capitalize first letter
-        if title:
-            title = title[0].upper() + title[1:]
-        
-        return title
-    
-    def _detect_priority(self, text: str) -> str:
-        """Detect task priority from keywords"""
-        text_lower = text.lower()
-        
-        # Check high priority first
-        for keyword in self.PRIORITY_MAP['high']:
-            if keyword in text_lower:
-                return 'high'
-        
-        # Check medium priority
-        for keyword in self.PRIORITY_MAP['medium']:
-            if keyword in text_lower:
-                return 'medium'
-        
-        # Check low priority
-        for keyword in self.PRIORITY_MAP['low']:
-            if keyword in text_lower:
-                return 'low'
-        
-        # Default to low
-        return 'low'
-    
-    def _detect_category(self, text: str) -> str:
-        """Detect task category from keywords"""
-        text_lower = text.lower()
-        
-        # Score each category
-        scores = {cat: 0 for cat in self.CATEGORY_MAP}
-        
-        for category, keywords in self.CATEGORY_MAP.items():
-            for keyword in keywords:
-                if keyword in text_lower:
-                    scores[category] += 1
-        
-        # Get category with highest score
-        max_score = max(scores.values())
-        if max_score > 0:
-            for category, score in scores.items():
-                if score == max_score:
-                    return category
-        
-        # Default to Personal
-        return 'Personal'
-
-
-# Create global extractor instance
-extractor = TaskExtractor()
-
-
-def extract_tasks(text: str) -> List[Dict]:
-    """Wrapper function for task extraction"""
-    return extractor.extract(text)
+    try:
+        resp = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": get_system_prompt()},
+                {"role": "user", "content": text},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=1500,
+        )
+        data = json.loads(resp.choices[0].message.content)
+        if "tasks" not in data:
+            data["tasks"] = [data["task"]] if "task" in data else []
+        return data
+    except Exception as e:
+        print(f"[ERROR] LLM: {e}")
+        return None
 
 
 # =============================================================================
-# 🌐 API ENDPOINTS
+# LOCAL EXTRACTION ENGINE
 # =============================================================================
+PRIORITY_MAP = {
+    "high": ["asap", "urgent", "now", "immediately", "critical", "eod", "today",
+             "must", "important", "emergency", "right away", "tonight"],
+    "medium": ["tomorrow", "friday", "monday", "tuesday", "wednesday", "thursday",
+               "saturday", "sunday", "next week", "meeting", "soon", "this week",
+               "by", "deadline", "due", "schedule", "morning", "afternoon",
+               "evening", "night", "noon", "remind"],
+    "low": ["later", "maybe", "whenever", "someday", "eventually", "consider",
+            "possibly", "no rush", "optional", "when possible"],
+}
 
-@app.post("/api/process", response_model=dict)
-async def process_text(request: TextRequest):
-    """Extract tasks from text with comprehensive validation"""
-    text = request.text.strip()
-    
-    # Input validation
-    if len(text) < MIN_TEXT_LENGTH:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Text too short. Minimum {MIN_TEXT_LENGTH} characters required."
-        )
-    
-    if len(text) > MAX_TEXT_LENGTH:
-        raise HTTPException(
-            status_code=413, 
-            detail=f"Text too long. Maximum {MAX_TEXT_LENGTH} characters allowed."
-        )
-    
-    if not any(c.isalnum() for c in text):
-        raise HTTPException(
-            status_code=400, 
-            detail="Text must contain at least one letter or number."
-        )
-    
-    # Extract tasks
-    tasks = extract_tasks(text)
-    
-    # Response
-    if not tasks:
-        return {
-            "tasks": [],
-            "count": 0,
-            "message": "No actionable tasks found. Try using action words like 'call', 'email', 'buy', 'finish', 'meet'.",
-            "suggestions": [
-                "Use commas to separate tasks: 'Email boss, call John, buy groceries'",
-                "Use 'and' or '+' between tasks: 'Finish report and send email'",
-                "Include action verbs: 'call', 'email', 'buy', 'finish', 'meet'"
-            ]
-        }
-    
-    return {
-        "tasks": tasks,
-        "count": len(tasks),
-        "message": f"Successfully extracted {len(tasks)} task(s)"
-    }
+CATEGORY_MAP = {
+    "Meeting": ["call", "meeting", "meet", "discuss", "chat", "talk", "conference",
+                "zoom", "teams", "catchup", "sync", "standup", "interview", "demo"],
+    "Personal": ["gym", "buy", "shop", "groceries", "doctor", "dentist", "workout",
+                 "exercise", "cook", "clean", "laundry", "medicine", "haircut",
+                 "home", "family", "friend", "birthday", "gift", "vacation",
+                 "dinner", "lunch", "pharmacy", "grocery", "pick up", "drop off",
+                 "personal", "shopping", "diet", "shoes"],
+    "Work": ["boss", "project", "report", "budget", "client", "review", "deadline",
+             "proposal", "email", "document", "team", "office", "submit", "update",
+             "company", "memo", "invoice", "contract", "quarterly", "analysis"],
+}
+
+SARCASM_PATTERNS = [
+    r"yeah right", r"sure.{0,10}5 minutes", r"oh great",
+    r"can't wait to", r"totally gonna", r"good luck with that",
+]
+
+
+def detect_priority(text: str) -> str:
+    t = text.lower()
+    for p, kws in PRIORITY_MAP.items():
+        if any(k in t for k in kws):
+            return p
+    return "medium"
+
+
+def detect_category(text: str) -> str:
+    t = text.lower()
+    scores = {c: sum(1 for k in kws if k in t) for c, kws in CATEGORY_MAP.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else "Work"
+
+
+def clean_title(text: str) -> str:
+    title = text.strip()
+    title = re.sub(r"^\s*(i\s+(want|need|have|will|should|am going|plan)\s+to)\s+", "", title, flags=re.I)
+    title = re.sub(r"^\s*i\s+('m|am)\s+", "", title, flags=re.I)
+    for w in ["and", "or", "then", "also", "but", "so", "to"]:
+        title = re.sub(rf"^{w}\s+", "", title, flags=re.I)
+    time_pats = [
+        r"\b(tomorrow|today|tonight|next week|next month)\b",
+        r"\b(this|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b",
+        r"\bby\s+(eod|end\s+of\s+day|tomorrow|friday|monday)\b",
+        r"\b(morning|afternoon|evening|night|noon)\b",
+        r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+    ]
+    for p in time_pats:
+        title = re.sub(p, "", title, flags=re.I)
+    title = re.sub(r"\s+", " ", title).strip().rstrip(",;:")
+    if len(title) > 100:
+        title = title[:97] + "..."
+    if title:
+        title = title[0].upper() + title[1:]
+        if not title.endswith((".", "!", "?")):
+            title += "."
+    return title
+
+
+def process_local(text: str) -> dict:
+    fragments = smart_split(text)
+    tasks = []
+    seen = set()
+
+    for frag in fragments:
+        frag = frag.strip().strip('"').strip("'")
+        if len(frag) < 3:
+            continue
+        if any(re.search(p, frag.lower()) for p in SARCASM_PATTERNS):
+            continue
+        if re.match(r"^(\d{1,2}(am|pm|:\d{2})|tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$", frag, re.I):
+            continue
+
+        title = clean_title(frag)
+        if len(title) < 3 or title.lower() in seen:
+            continue
+        seen.add(title.lower())
+
+        priority = detect_priority(frag)
+        date_str = build_date_string(frag)
+        if date_str and "T" in date_str and priority == "low":
+            priority = "medium"
+
+        assignee = None
+        m = re.search(r"(?:assign(?:ed)?\s+to|@|tell|ask|remind)\s+(\w+)", frag.lower())
+        if m:
+            assignee = m.group(1).title()
+
+        tasks.append({
+            "title": title,
+            "original_text": frag,
+            "priority": priority,
+            "due_date": date_str,
+            "category": detect_category(frag),
+            "assignee": assignee,
+            "is_sarcastic": False,
+        })
+
+    return {"tasks": tasks}
+
+
+# =============================================================================
+# API ENDPOINTS
+# =============================================================================
+@app.get("/api/config", response_model=ConfigResponse)
+async def get_config():
+    return ConfigResponse(
+        google_client_id=config.GOOGLE_CLIENT_ID,
+        llm_available=LLM_AVAILABLE,
+        debug=config.DEBUG,
+    )
 
 
 @app.get("/api/health")
-async def health():
-    """Health check endpoint"""
+async def health_check():
     return {
         "status": "ok",
         "version": "3.0.0",
-        "timestamp": datetime.utcnow().isoformat(),
-        "features": {
-            "smart_splitting": True,
-            "parentheses_protection": True,
-            "priority_detection": True,
-            "category_detection": True,
-            "time_extraction": True,
-            "duplicate_prevention": True
-        }
+        "llm_available": LLM_AVAILABLE,
+        "google_configured": bool(config.GOOGLE_CLIENT_ID and "your-client" not in config.GOOGLE_CLIENT_ID.lower()),
+        "timestamp": datetime.now().isoformat(),
     }
 
 
-@app.get("/")
-async def root():
-    """Root endpoint with API information"""
-    return {
-        "name": "FlowPilot AI API",
-        "version": "3.0.0",
-        "description": "Advanced task extraction with smart NLP",
-        "docs": "/docs",
-        "endpoints": {
-            "process": "POST /api/process",
-            "health": "GET /api/health"
-        },
-        "features": [
-            "Smart comma/and/or/+/then splitting",
-            "Parentheses protection (won't split inside ())",
-            "Priority detection (high/medium/low)",
-            "Category detection (Work/Personal/Meeting/Finance/Health)",
-            "Time extraction from tasks",
-            "Duplicate task prevention"
-        ]
-    }
+@app.post("/api/process", response_model=ExtractionResponse)
+async def process_input(request: Request):
+    text = ""
+    content_type = request.headers.get("content-type", "")
+
+    try:
+        if "application/json" in content_type:
+            body = await request.json()
+            text = body.get("text", "").strip()
+        else:
+            form = await request.form()
+            text = (form.get("text") or "").strip()
+    except Exception:
+        raise HTTPException(400, "Invalid request format")
+
+    if len(text) < 3:
+        raise HTTPException(400, "Text too short. Minimum 3 characters.")
+    if len(text) > 10000:
+        raise HTTPException(413, "Text too long. Maximum 10,000 characters.")
+
+    print(f"[INPUT] ({len(text)} chars): {text[:80]}...")
+
+    data = None
+    if LLM_AVAILABLE:
+        data = process_with_llm(text)
+
+    if not data or not data.get("tasks"):
+        data = process_local(text)
+
+    final_tasks = []
+    clarifications = []
+
+    for t in data.get("tasks", []):
+        if t.get("is_sarcastic"):
+            continue
+
+        task_id = str(uuid.uuid4())
+        date_str = t.get("due_date")
+
+        if date_str:
+            try:
+                fmt = "%Y-%m-%dT%H:%M:%S" if "T" in date_str else "%Y-%m-%d"
+                datetime.strptime(date_str.split(".")[0], fmt)
+            except ValueError:
+                date_str = None
+
+        is_clarified = bool(date_str)
+        if not date_str:
+            clarifications.append({
+                "id": task_id,
+                "task_title": t.get("title", "Unknown"),
+                "question": "When is this due? (e.g., 'Tomorrow at 2pm', 'Next Friday')",
+            })
+
+        priority = (t.get("priority") or "medium").lower()
+        if priority not in ("high", "medium", "low"):
+            priority = "medium"
+        category = t.get("category", "Work")
+        if category not in ("Work", "Personal", "Meeting"):
+            category = "Work"
+
+        final_tasks.append(Task(
+            id=task_id,
+            title=t.get("title", "Untitled")[:100],
+            original_text=t.get("original_text", "")[:500],
+            due_date=date_str,
+            assignee=t.get("assignee"),
+            priority=priority,
+            category=category,
+            recurrence=t.get("recurrence"),
+            is_clarified=is_clarified,
+            is_sarcastic=False,
+        ))
+
+    return ExtractionResponse(tasks=final_tasks, clarifications=clarifications)
 
 
 @app.get("/api/test")
 async def test_extraction():
-    """Test endpoint with sample extractions"""
-    test_cases = [
+    tests = [
         "Email boss tomorrow, gym 6pm, call Sarah about meeting",
-        "Buy groceries + finish report and call John then gym at 6pm",
-        "Finish Q1 report (including budget, timeline, and KPIs) by Friday",
+        "Buy groceries (milk, eggs, bread) + finish report by Friday",
         "Urgent: submit proposal ASAP, maybe clean room later",
-        "Call doctor at 3pm and pick up medicine from pharmacy"
+        "Call doctor at 3pm then pick up medicine from pharmacy",
     ]
-    
-    results = []
-    for test in test_cases:
-        tasks = extract_tasks(test)
-        results.append({
-            "input": test,
-            "task_count": len(tasks),
-            "tasks": [{"title": t["title"], "priority": t["priority"], "category": t["category"]} for t in tasks]
-        })
-    
-    return {"test_results": results}
+    return {"results": [{"input": t, "tasks": process_local(t)["tasks"]} for t in tests]}
+
+
+@app.get("/")
+async def root():
+    return {
+        "name": "FlowPilot AI API",
+        "version": "3.0.0",
+        "docs": "/docs",
+        "health": "/api/health",
+        "test": "/api/test",
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=config.DEBUG)

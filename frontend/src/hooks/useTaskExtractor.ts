@@ -1,92 +1,104 @@
 import { useState, useCallback } from 'react';
 import axios, { AxiosError } from 'axios';
-import { BackendTask, FrontendTask } from '../types/task';
+import { Task, Clarification, ExtractionResponse, AppConfig } from '../types/task';
+
+const API_BASE = process.env.REACT_APP_API_URL || 'https://flowpilot-app.onrender.com';
 
 export const useTaskExtractor = () => {
-  const [tasks, setTasks] = useState<FrontendTask[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [config, setConfig] = useState<AppConfig>({
+    google_client_id: '',
+    llm_available: false,
+    debug: false,
+  });
 
-  const extractTasks = useCallback(async (text: string) => {
+  const loadConfig = useCallback(async () => {
+    try {
+      const res = await axios.get<AppConfig>(`${API_BASE}/api/config`);
+      setConfig(res.data);
+      console.log('[Config]', res.data);
+    } catch (e) {
+      console.warn('[Config] Failed to load:', e);
+    }
+  }, []);
+
+  const extractTasks = useCallback(async (text: string, isRerun = false): Promise<boolean> => {
     if (!text.trim()) {
       setError('Please enter some text to analyze');
       return false;
     }
 
-    // ✅ FIXED: Fallback to production URL if env var missing
-    const apiUrl = import.meta.env.VITE_API_URL || 'https://flowpilot-app.onrender.com/api/process';
-    
-    console.log('🔗 API URL:', apiUrl); // Debug log
-
     setLoading(true);
-    setTasks([]);
     setError('');
 
     try {
-      const response = await axios.post<{ 
-        tasks: BackendTask[]; 
-        message?: string; 
-        count?: number 
-      }>(
-        apiUrl,
-        { text },
-        { 
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 30000  // 30 second timeout (increased for Render free tier)
-        }
+      const formData = new FormData();
+      formData.append('text', text);
+
+      const response = await axios.post<ExtractionResponse>(
+        `${API_BASE}/api/process`,
+        formData,
+        { timeout: 30000 }
       );
 
-      // Transform backend tasks to frontend format
-      const transformedTasks: FrontendTask[] = (response.data.tasks || []).map(task => ({
-        id: task.id,
-        title: task.title || task.original_text.slice(0, 50),
-        priority: (task.priority as 'high' | 'medium' | 'low') || 'low',
-        category: task.category || 'Personal'
-      }));
+      const data = response.data;
 
-      setTasks(transformedTasks);
-      
-      // Show backend message if no tasks found
-      if (transformedTasks.length === 0 && response.data.message) {
-        setError(response.data.message);
+      if (isRerun) {
+        const clarifiedIds = new Set(clarifications.map(c => c.id));
+        setTasks(prev => {
+          const remaining = prev.filter(t => !clarifiedIds.has(t.id));
+          return [...remaining, ...data.tasks];
+        });
       } else {
-        setError('');
+        setTasks(data.tasks);
       }
-      
+
+      setClarifications(data.clarifications || []);
       return true;
     } catch (err) {
-      const axiosError = err as AxiosError<{ detail?: string }>;
-      
-      let errorMsg = 'Failed to extract tasks. Please try again.';
-      
-      if (axiosError.code === 'ECONNABORTED') {
-        errorMsg = '⏱️ Request timeout. The server might be waking up (free tier). Please wait 30 seconds and try again.';
-      } else if (axiosError.response?.status === 413) {
-        errorMsg = '📏 Text too long. Please keep it under 10,000 characters.';
-      } else if (axiosError.response?.status === 400) {
-        errorMsg = axiosError.response.data?.detail || 'Invalid input. Please check your text.';
-      } else if (axiosError.response?.status === 500) {
-        errorMsg = '🔧 Server error. Our team has been notified. Please try again in a few minutes.';
-      } else if (axiosError.message.includes('Network Error')) {
-        errorMsg = '🌐 Network error. Check your internet connection or try again later.';
+      const axiosErr = err as AxiosError<{ detail?: string }>;
+      let msg = 'Failed to extract tasks. Please try again.';
+
+      if (axiosErr.code === 'ECONNABORTED') {
+        msg = '⏱️ Timeout. Server may be waking up (free tier). Try again in 30s.';
+      } else if (axiosErr.response?.status === 413) {
+        msg = '📏 Text too long. Maximum 10,000 characters.';
+      } else if (axiosErr.response?.status === 400) {
+        msg = axiosErr.response.data?.detail || 'Invalid input.';
+      } else if (axiosErr.message?.includes('Network Error')) {
+        msg = '🌐 Network error. Check connection or try again.';
       }
-      
-      setError(errorMsg);
-      console.error('Task extraction error:', {
-        message: axiosError.message,
-        response: axiosError.response?.data,
-        status: axiosError.response?.status
-      });
+
+      setError(msg);
+      console.error('Extraction error:', err);
       return false;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [clarifications]);
 
-  const clearTasks = useCallback(() => {
+  const clearAll = useCallback(() => {
     setTasks([]);
+    setClarifications([]);
     setError('');
   }, []);
 
-  return { tasks, loading, error, extractTasks, clearTasks };
+  const removeSyncedTasks = useCallback(() => {
+    setTasks(prev => prev.filter(t => !t.is_clarified));
+  }, []);
+
+  return {
+    tasks,
+    clarifications,
+    loading,
+    error,
+    config,
+    loadConfig,
+    extractTasks,
+    clearAll,
+    removeSyncedTasks,
+  };
 };

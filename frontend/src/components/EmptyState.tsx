@@ -1,32 +1,30 @@
 import React from 'react';
 
 interface EmptyStateProps {
-  type: 'calendar' | 'review';
+  type: 'ready' | 'review';
 }
 
 export const EmptyState: React.FC<EmptyStateProps> = ({ type }) => {
   const states = {
-    calendar: {
-      icon: '📱',
-      title: 'No urgent tasks',
-      subtitle: 'High/medium priority tasks will appear here'
+    ready: {
+      icon: 'fa-regular fa-clipboard',
+      title: 'No tasks ready yet',
+      subtitle: 'Tasks with dates will appear here',
     },
     review: {
-      icon: '⚡',
-      title: 'Tasks will appear here',
-      subtitle: 'Paste some text and click Extract'
-    }
+      icon: 'fa-regular fa-circle-check',
+      title: 'All tasks are clear!',
+      subtitle: 'No tasks pending review',
+    },
   };
 
   const state = states[type];
 
   return (
-    <div className="text-center py-16">
-      <div className="w-20 h-20 bg-gradient-to-r from-orange-50 to-yellow-50 rounded-3xl mx-auto mb-6 flex items-center justify-center shadow-inner">
-        <span className="text-3xl">{state.icon}</span>
-      </div>
-      <p className="text-xl font-medium text-gray-600 mb-2">{state.title}</p>
-      <p className="text-gray-500 text-sm">{state.subtitle}</p>
+    <div className="text-center py-12 text-gray-400">
+      <i className={`${state.icon} text-3xl mb-3 block`}></i>
+      <p className="font-semibold text-sm">{state.title}</p>
+      <p className="text-xs mt-1">{state.subtitle}</p>
     </div>
   );
 };
