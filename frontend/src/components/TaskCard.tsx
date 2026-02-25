@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, DragEvent } from 'react';
 import { Task, PRIORITY_COLORS, CATEGORY_STYLES } from '../types/task';
+import { DatePicker } from './DatePicker';
 
 interface TaskCardProps {
   task: Task;
@@ -7,11 +8,17 @@ interface TaskCardProps {
   onMove?: (id: string) => void;
   onEditTitle?: (id: string, newTitle: string) => void;
   onChangePriority?: (id: string, newPriority: 'high' | 'medium' | 'low') => void;
+  onChangeDate?: (id: string, newDate: string | null) => void;
   moveLabel?: string;
+  isDark?: boolean;
+  // Drag handlers
+  onDragStart?: (e: DragEvent<HTMLDivElement>, taskId: string) => void;
+  onDragEnd?: (e: DragEvent<HTMLDivElement>) => void;
+  isDragging?: boolean;
 }
 
 function formatDate(dateStr?: string | null): string {
-  if (!dateStr) return 'No Date';
+  if (!dateStr) return 'No Date — Click to add';
   try {
     if (dateStr.includes('T')) {
       const dt = new Date(dateStr);
@@ -34,12 +41,14 @@ function formatDate(dateStr?: string | null): string {
 }
 
 export const TaskCard: React.FC<TaskCardProps> = ({
-  task, onDelete, onMove, onEditTitle, onChangePriority, moveLabel
+  task, onDelete, onMove, onEditTitle, onChangePriority, onChangeDate,
+  moveLabel, isDark = false, onDragStart, onDragEnd, isDragging,
 }) => {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.title);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showPriorityMenu, setShowPriorityMenu] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
   const priorityStyle = PRIORITY_COLORS[task.priority] || PRIORITY_COLORS.medium;
   const categoryClass = CATEGORY_STYLES[task.category] || CATEGORY_STYLES.Work;
@@ -63,49 +72,73 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
   return (
     <div
-      className="group task-card-hover bg-gray-50 p-4 rounded-xl mb-3 shadow-sm border border-gray-200 transition-all duration-200 hover:shadow-md animate-slide-in"
+      draggable={!!onDragStart}
+      onDragStart={e => onDragStart?.(e, task.id)}
+      onDragEnd={onDragEnd}
+      className={`group task-card-hover p-4 rounded-xl mb-3 shadow-sm border transition-all duration-200 hover:shadow-md ${
+        isDragging ? 'opacity-40 scale-95' : ''
+      } ${
+        isDark
+          ? 'bg-slate-900/60 border-slate-700 hover:border-slate-500'
+          : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+      } ${onDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
       style={{ borderLeftWidth: '4px', borderLeftColor: priorityStyle.border }}
     >
-      {/* Tags Row */}
-      <div className="flex gap-2 mb-2 flex-wrap">
-        <span className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase ${categoryClass}`}>
-          {task.category}
-        </span>
-        {task.assignee && (
-          <span className="text-xs px-2.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-800 flex items-center gap-1">
-            <i className="fa-solid fa-user text-[0.6rem]"></i> {task.assignee}
-          </span>
+      {/* Drag Handle + Tags Row */}
+      <div className="flex items-start gap-2 mb-2">
+        {/* Drag Handle */}
+        {onDragStart && (
+          <div className={`mt-0.5 opacity-0 group-hover:opacity-60 transition-opacity ${
+            isDark ? 'text-slate-500' : 'text-slate-400'
+          }`}>
+            <i className="fa-solid fa-grip-vertical text-xs"></i>
+          </div>
         )}
 
-        {/* Priority Badge - Clickable */}
-        <div className="relative">
-          <button
-            onClick={() => setShowPriorityMenu(!showPriorityMenu)}
-            className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase cursor-pointer hover:opacity-80 ${priorityStyle.bg} ${priorityStyle.text}`}
-            title="Click to change priority"
-          >
-            {task.priority}
-          </button>
-
-          {showPriorityMenu && (
-            <div className="absolute top-6 left-0 bg-white shadow-lg rounded-lg border z-10 py-1 min-w-[100px]">
-              {(['high', 'medium', 'low'] as const).map(p => (
-                <button
-                  key={p}
-                  onClick={() => {
-                    onChangePriority?.(task.id, p);
-                    setShowPriorityMenu(false);
-                  }}
-                  className={`block w-full text-left px-3 py-1.5 text-xs font-bold uppercase hover:bg-gray-100 ${
-                    p === task.priority ? 'bg-gray-50' : ''
-                  }`}
-                  style={{ color: PRIORITY_COLORS[p].border }}
-                >
-                  {p === task.priority ? `✓ ${p}` : p}
-                </button>
-              ))}
-            </div>
+        {/* Tags */}
+        <div className="flex gap-2 flex-wrap flex-1">
+          <span className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase ${categoryClass}`}>
+            {task.category}
+          </span>
+          {task.assignee && (
+            <span className="text-xs px-2.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300 flex items-center gap-1">
+              <i className="fa-solid fa-user text-[0.6rem]"></i> {task.assignee}
+            </span>
           )}
+
+          {/* Priority Badge - Clickable */}
+          <div className="relative">
+            <button
+              onClick={e => { e.stopPropagation(); setShowPriorityMenu(!showPriorityMenu); }}
+              className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase cursor-pointer hover:opacity-80 ${priorityStyle.bg} ${priorityStyle.text}`}
+              title="Click to change priority"
+            >
+              {task.priority}
+            </button>
+
+            {showPriorityMenu && (
+              <div className={`absolute top-6 left-0 shadow-lg rounded-lg border z-20 py-1 min-w-[100px] ${
+                isDark ? 'bg-slate-800 border-slate-600' : 'bg-white border-slate-200'
+              }`}>
+                {(['high', 'medium', 'low'] as const).map(p => (
+                  <button
+                    key={p}
+                    onClick={e => {
+                      e.stopPropagation();
+                      onChangePriority?.(task.id, p);
+                      setShowPriorityMenu(false);
+                    }}
+                    className={`block w-full text-left px-3 py-1.5 text-xs font-bold uppercase transition-colors ${
+                      isDark ? 'hover:bg-slate-700' : 'hover:bg-gray-100'
+                    } ${p === task.priority ? (isDark ? 'bg-slate-700' : 'bg-gray-50') : ''}`}
+                    style={{ color: PRIORITY_COLORS[p].border }}
+                  >
+                    {p === task.priority ? `✓ ${p}` : p}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -122,19 +155,21 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             }}
             onBlur={handleSaveTitle}
             autoFocus
-            className="flex-1 px-2 py-1 border-2 border-indigo-400 rounded-lg text-sm font-bold focus:outline-none"
+            className={`flex-1 px-2 py-1 border-2 rounded-lg text-sm font-bold focus:outline-none ${
+              isDark
+                ? 'bg-slate-700 border-indigo-400 text-white'
+                : 'bg-white border-indigo-400 text-slate-900'
+            }`}
           />
-          <button
-            onClick={handleSaveTitle}
-            className="px-2 py-1 bg-indigo-500 text-white rounded-lg text-xs font-bold"
-          >
-            ✓
-          </button>
+          <button onClick={handleSaveTitle}
+            className="px-2 py-1 bg-indigo-500 text-white rounded-lg text-xs font-bold">✓</button>
         </div>
       ) : (
         <h4
           onClick={() => { setEditValue(task.title); setEditing(true); }}
-          className="font-bold text-gray-900 text-sm leading-snug mb-1.5 cursor-pointer hover:text-indigo-700 transition-colors"
+          className={`font-bold text-sm leading-snug mb-1.5 cursor-pointer transition-colors ${
+            isDark ? 'text-slate-100 hover:text-indigo-300' : 'text-gray-900 hover:text-indigo-700'
+          }`}
           title="Click to edit title"
         >
           {task.title}
@@ -142,41 +177,63 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       )}
 
       {/* Original Text */}
-      <p className="text-xs text-gray-500 italic mb-3 leading-relaxed break-words">
+      <p className={`text-xs italic mb-3 leading-relaxed break-words ${
+        isDark ? 'text-slate-400' : 'text-gray-500'
+      }`}>
         "{task.original_text}"
       </p>
 
-      {/* Footer */}
-      <div className="flex justify-between items-center text-xs text-gray-400 font-medium">
-        <span>
-          <i className="fa-regular fa-calendar mr-1"></i>
-          {formatDate(task.due_date)}
-        </span>
+      {/* Footer - Date with Picker */}
+      <div className="relative">
+        <div className={`flex justify-between items-center text-xs font-medium ${
+          isDark ? 'text-slate-500' : 'text-gray-400'
+        }`}>
+          <button
+            onClick={e => { e.stopPropagation(); setShowDatePicker(!showDatePicker); }}
+            className={`flex items-center gap-1 hover:text-indigo-500 transition-colors ${
+              !task.due_date ? 'text-amber-500' : ''
+            }`}
+            title="Click to change date"
+          >
+            <i className="fa-regular fa-calendar"></i>
+            {formatDate(task.due_date)}
+            <i className="fa-solid fa-pen text-[0.5rem] ml-1 opacity-0 group-hover:opacity-100"></i>
+          </button>
+        </div>
+
+        {/* Date Picker */}
+        {showDatePicker && onChangeDate && (
+          <DatePicker
+            currentDate={task.due_date}
+            onDateChange={(newDate) => onChangeDate(task.id, newDate)}
+            onClose={() => setShowDatePicker(false)}
+            isDark={isDark}
+          />
+        )}
       </div>
 
       {/* Action Buttons - Show on Hover */}
       <div className="flex gap-2 mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
-        {/* Move Button */}
         {onMove && (
-          <button
-            onClick={() => onMove(task.id)}
-            className="flex-1 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors flex items-center justify-center gap-1"
-          >
+          <button onClick={() => onMove(task.id)}
+            className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1 ${
+              isDark
+                ? 'bg-indigo-900/40 text-indigo-300 hover:bg-indigo-800'
+                : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
+            }`}>
             <i className="fa-solid fa-arrow-right-arrow-left text-[0.6rem]"></i>
             {moveLabel || 'Move'}
           </button>
         )}
-
-        {/* Delete Button */}
         {onDelete && (
-          <button
-            onClick={handleDelete}
+          <button onClick={handleDelete}
             className={`py-1.5 px-3 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${
               showConfirm
                 ? 'bg-red-500 text-white'
-                : 'bg-red-50 text-red-600 hover:bg-red-100'
-            }`}
-          >
+                : isDark
+                  ? 'bg-red-900/30 text-red-400 hover:bg-red-800'
+                  : 'bg-red-50 text-red-600 hover:bg-red-100'
+            }`}>
             <i className="fa-solid fa-trash text-[0.6rem]"></i>
             {showConfirm ? 'Confirm?' : 'Delete'}
           </button>

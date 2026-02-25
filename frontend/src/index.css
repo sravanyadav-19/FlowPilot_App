@@ -124,3 +124,45 @@ input:focus-visible {
 .dark .border-green-100 { border-color: #064e3b; }
 .dark .border-amber-100 { border-color: #78350f; }
 .dark .border-red-100 { border-color: #7f1d1d; }
+/* ======================== DAY 7 ADDITIONS ======================== */
+
+/* Drag & Drop */
+.dragging {
+  opacity: 0.4;
+  transform: scale(0.95) rotate(1deg);
+}
+
+/* Fade in for modals */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* Drop bounce */
+@keyframes dropBounce {
+  0% { transform: scale(0.95); opacity: 0.5; }
+  50% { transform: scale(1.02); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.animate-drop {
+  animation: dropBounce 0.3s ease-out;
+}
+
+/* Undo toast slide */
+@keyframes slideUp {
+  from { transform: translateX(-50%) translateY(100px); opacity: 0; }
+  to { transform: translateX(-50%) translateY(0); opacity: 1; }
+}
+
+/* Grab cursor */
+.cursor-grab { cursor: grab; }
+.cursor-grab:active { cursor: grabbing; }
+
+/* Date picker dark mode */
+.dark input[type="date"],
+.dark input[type="time"] {
+  color-scheme: dark;
+}

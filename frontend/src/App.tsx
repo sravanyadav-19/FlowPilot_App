@@ -3,11 +3,16 @@ import { useTaskExtractor } from './hooks/useTaskExtractor';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { useTheme } from './hooks/useTheme';
 import { useExport } from './hooks/useExport';
+import { useDragDrop } from './hooks/useDragDrop';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useUndoRedo } from './hooks/useUndoRedo';
 import { TaskCard } from './components/TaskCard';
 import { EmptyState } from './components/EmptyState';
 import { ThemeToggle } from './components/ThemeToggle';
 import { FilterBar } from './components/FilterBar';
 import { ExportMenu } from './components/ExportMenu';
+import { DragDropColumn } from './components/DragDropColumn';
+import { ShortcutsModal } from './components/ShortcutsModal';
 import { Task } from './types/task';
 import './index.css';
 
@@ -21,13 +26,18 @@ function App() {
   const [savedTasks, setSavedTasks, clearSaved] = useLocalStorage<Task[]>('flowpilot-tasks', []);
   const toastTimeout = useRef<NodeJS.Timeout>();
 
-  // Day 6: New State
+  // Day 6: Theme, Export, Filters
   const { isDark, toggleTheme } = useTheme();
   const { exportJSON, exportCSV, copyToClipboard } = useExport();
   const [searchQuery, setSearchQuery] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [sortBy, setSortBy] = useState<'default' | 'priority' | 'date' | 'category'>('default');
+
+  // Day 7: Drag & Drop, Shortcuts, Undo
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const { pushUndo, popUndo, canUndo, lastAction } = useUndoRedo();
 
   const {
     tasks, clarifications, loading, error, config,
@@ -37,9 +47,7 @@ function App() {
   // ======================== COMPUTED TASKS ========================
   const allTasks = tasks.length > 0 ? tasks : savedTasks;
 
-  // Apply filters
   const filteredTasks = allTasks.filter(task => {
-    // Search filter
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       const matchesTitle = task.title.toLowerCase().includes(query);
@@ -47,17 +55,11 @@ function App() {
       const matchesAssignee = task.assignee?.toLowerCase().includes(query);
       if (!matchesTitle && !matchesOriginal && !matchesAssignee) return false;
     }
-
-    // Priority filter
     if (priorityFilter !== 'all' && task.priority !== priorityFilter) return false;
-
-    // Category filter
     if (categoryFilter !== 'all' && task.category !== categoryFilter) return false;
-
     return true;
   });
 
-  // Apply sorting
   const sortedTasks = [...filteredTasks].sort((a, b) => {
     switch (sortBy) {
       case 'priority': {
@@ -92,33 +94,144 @@ function App() {
     toastTimeout.current = setTimeout(() => setToast(prev => ({ ...prev, show: false })), 3500);
   }, []);
 
-  // ======================== TASK ACTIONS ========================
+  // ======================== TASK ACTIONS (with Undo) ========================
   const handleDeleteTask = useCallback((id: string) => {
+    const task = allTasks.find(t => t.id === id);
+    if (task) {
+      pushUndo({
+        type: 'delete',
+        taskId: id,
+        previousState: { ...task },
+        description: `Deleted "${task.title.slice(0, 25)}..."`
+      });
+    }
     setSavedTasks(prev => prev.filter(t => t.id !== id));
-    showToast('Task deleted', 'warning');
-  }, [setSavedTasks, showToast]);
+    showToast('Task deleted — Ctrl+Z to undo', 'warning');
+  }, [allTasks, setSavedTasks, showToast, pushUndo]);
 
   const handleMoveTask = useCallback((id: string) => {
+    const task = allTasks.find(t => t.id === id);
+    if (task) {
+      pushUndo({
+        type: 'move',
+        taskId: id,
+        previousState: { ...task },
+        description: `Moved "${task.title.slice(0, 25)}..."`
+      });
+    }
     setSavedTasks(prev => prev.map(t =>
       t.id === id ? { ...t, is_clarified: !t.is_clarified } : t
     ));
     showToast('Task moved', 'success');
-  }, [setSavedTasks, showToast]);
+  }, [allTasks, setSavedTasks, showToast, pushUndo]);
 
   const handleEditTitle = useCallback((id: string, newTitle: string) => {
+    const task = allTasks.find(t => t.id === id);
+    if (task) {
+      pushUndo({
+        type: 'edit',
+        taskId: id,
+        previousState: { ...task },
+        description: `Edited "${task.title.slice(0, 25)}..."`
+      });
+    }
     setSavedTasks(prev => prev.map(t =>
       t.id === id ? { ...t, title: newTitle } : t
     ));
     showToast('Title updated', 'success');
-  }, [setSavedTasks, showToast]);
+  }, [allTasks, setSavedTasks, showToast, pushUndo]);
 
   const handleChangePriority = useCallback((id: string, newPriority: 'high' | 'medium' | 'low') => {
+    const task = allTasks.find(t => t.id === id);
+    if (task) {
+      pushUndo({
+        type: 'priority',
+        taskId: id,
+        previousState: { ...task },
+        description: `Priority of "${task.title.slice(0, 20)}..."`
+      });
+    }
     setSavedTasks(prev => prev.map(t =>
       t.id === id ? { ...t, priority: newPriority } : t
     ));
     showToast(`Priority → ${newPriority.toUpperCase()}`, 'info');
-  }, [setSavedTasks, showToast]);
+  }, [allTasks, setSavedTasks, showToast, pushUndo]);
 
+  // ======================== DAY 7: DATE CHANGE ========================
+  const handleChangeDate = useCallback((id: string, newDate: string | null) => {
+    const task = allTasks.find(t => t.id === id);
+    if (task) {
+      pushUndo({
+        type: 'date',
+        taskId: id,
+        previousState: { ...task },
+        description: `Date of "${task.title.slice(0, 25)}..."`
+      });
+    }
+    setSavedTasks(prev => prev.map(t =>
+      t.id === id ? { ...t, due_date: newDate, is_clarified: !!newDate } : t
+    ));
+    showToast(newDate ? 'Date updated' : 'Date cleared', 'success');
+  }, [allTasks, setSavedTasks, showToast, pushUndo]);
+
+  // ======================== DAY 7: DRAG & DROP ========================
+  const handleDragMove = useCallback((taskId: string, targetColumn: 'ready' | 'review') => {
+    const task = allTasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    const targetClarified = targetColumn === 'ready';
+    if (task.is_clarified === targetClarified) return;
+
+    pushUndo({
+      type: 'move',
+      taskId,
+      previousState: { ...task },
+      description: `Dragged "${task.title.slice(0, 25)}..."`
+    });
+
+    setSavedTasks(prev => prev.map(t =>
+      t.id === taskId ? { ...t, is_clarified: targetClarified } : t
+    ));
+    showToast(`Task moved to ${targetColumn === 'ready' ? 'Ready' : 'Review'}`, 'success');
+  }, [allTasks, setSavedTasks, showToast, pushUndo]);
+
+  const {
+    dragState, handleDragStart, handleDragEnd,
+    handleDragOver, handleDragLeave, handleDrop,
+  } = useDragDrop(handleDragMove);
+
+  // ======================== DAY 7: UNDO ========================
+  const handleUndo = useCallback(() => {
+    const action = popUndo();
+    if (!action) {
+      showToast('Nothing to undo', 'info');
+      return;
+    }
+
+    if (action.type === 'delete') {
+      setSavedTasks(prev => [...prev, action.previousState]);
+    } else {
+      setSavedTasks(prev => prev.map(t =>
+        t.id === action.taskId ? action.previousState : t
+      ));
+    }
+    showToast(`Undone: ${action.description}`, 'success');
+  }, [popUndo, setSavedTasks, showToast]);
+
+  // ======================== DAY 7: KEYBOARD SHORTCUTS ========================
+  useKeyboardShortcuts({
+    onToggleTheme: toggleTheme,
+    onFocusSearch: () => searchInputRef.current?.focus(),
+    onUndo: handleUndo,
+    onToggleShortcuts: () => setShowShortcuts(prev => !prev),
+    onEscape: () => {
+      setShowShortcuts(false);
+      setSearchQuery('');
+      (document.activeElement as HTMLElement)?.blur();
+    },
+  });
+
+  // ======================== CLEAR ALL ========================
   const handleClearAll = () => {
     setText(''); clearAll(); clearSaved(); setClarifyAnswers({});
     setSearchQuery(''); setPriorityFilter('all'); setCategoryFilter('all');
@@ -214,7 +327,7 @@ function App() {
     } else showToast('Sync failed', 'error');
   };
 
-  // ======================== EXPORT HANDLERS ========================
+  // ======================== EXPORT ========================
   const handleExportJSON = () => { exportJSON(allTasks); showToast('JSON downloaded!', 'success'); };
   const handleExportCSV = () => { exportCSV(allTasks); showToast('CSV downloaded!', 'success'); };
   const handleCopyClipboard = async () => {
@@ -254,10 +367,8 @@ function App() {
           </div>
 
           <div className="flex gap-3 items-center flex-wrap">
-            {/* Theme Toggle */}
             <ThemeToggle isDark={isDark} onToggle={toggleTheme} />
 
-            {/* Export */}
             <ExportMenu
               onExportJSON={handleExportJSON}
               onExportCSV={handleExportCSV}
@@ -266,17 +377,11 @@ function App() {
               isDark={isDark}
             />
 
-            {/* Sort */}
             {allTasks.length > 0 && (
-              <select
-                value={sortBy}
-                onChange={e => setSortBy(e.target.value as any)}
+              <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
                 className={`px-3 py-2 rounded-lg text-xs font-bold border transition-colors ${
-                  isDark
-                    ? 'bg-slate-700 text-slate-200 border-slate-600'
-                    : 'bg-white text-slate-700 border-slate-300'
-                }`}
-              >
+                  isDark ? 'bg-slate-700 text-slate-200 border-slate-600' : 'bg-white text-slate-700 border-slate-300'
+                }`}>
                 <option value="default">Sort: Default</option>
                 <option value="priority">Sort: Priority</option>
                 <option value="date">Sort: Date</option>
@@ -284,7 +389,6 @@ function App() {
               </select>
             )}
 
-            {/* Clear All */}
             {allTasks.length > 0 && (
               <button onClick={handleClearAll}
                 className="px-4 py-2 rounded-lg text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200">
@@ -292,7 +396,6 @@ function App() {
               </button>
             )}
 
-            {/* Google Auth */}
             <button onClick={handleGoogleAuth} disabled={!!accessToken}
               className={`px-5 py-2.5 rounded-lg font-semibold text-sm flex items-center gap-2 border transition-all ${
                 accessToken
@@ -327,9 +430,7 @@ function App() {
         )}
 
         {/* ===== INPUT PANEL ===== */}
-        <section className={`p-6 rounded-2xl shadow-md mb-8 transition-colors ${
-          isDark ? 'bg-slate-800' : 'bg-white'
-        }`}>
+        <section className={`p-6 rounded-2xl shadow-md mb-8 transition-colors ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
           <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDark ? 'text-slate-200' : 'text-slate-700'}`}>
             <i className="fa-solid fa-brain text-indigo-500"></i> AI Workflow Engine
           </h3>
@@ -339,9 +440,7 @@ function App() {
             onKeyDown={handleKeyDown}
             placeholder={`Examples:\n• "Email boss tomorrow at 2pm, gym 6pm, call Sarah"\n• "Buy groceries (milk, eggs, bread) + finish report by Friday"\n\nSeparate tasks with commas, "and", "+", or new lines`}
             className={`w-full h-32 p-4 border-2 rounded-xl resize-y text-sm transition-colors focus:outline-none focus:border-indigo-500 ${
-              isDark
-                ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-400'
-                : 'bg-white border-slate-200 text-slate-800 placeholder-slate-400'
+              isDark ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-400' : 'bg-white border-slate-200 text-slate-800 placeholder-slate-400'
             }`}
           />
 
@@ -359,7 +458,9 @@ function App() {
           </div>
 
           {error && (
-            <div className="p-3 mb-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm font-medium dark:bg-red-900/30 dark:border-red-800 dark:text-red-300">
+            <div className={`p-3 mb-4 rounded-xl text-sm font-medium ${
+              isDark ? 'bg-red-900/30 border border-red-800 text-red-300' : 'bg-red-50 border border-red-200 text-red-700'
+            }`}>
               {error}
             </div>
           )}
@@ -376,16 +477,16 @@ function App() {
             <kbd className={`px-1.5 py-0.5 rounded border text-[0.65rem] ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-slate-100 border-slate-200'}`}>Ctrl</kbd>
             {' + '}
             <kbd className={`px-1.5 py-0.5 rounded border text-[0.65rem] ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-slate-100 border-slate-200'}`}>Enter</kbd>
-            {' to analyze'}
+            {' to analyze · Press '}
+            <kbd className={`px-1.5 py-0.5 rounded border text-[0.65rem] ${isDark ? 'bg-slate-700 border-slate-600' : 'bg-slate-100 border-slate-200'}`}>?</kbd>
+            {' for shortcuts'}
           </p>
         </section>
 
         {/* ===== CLARIFICATION ZONE ===== */}
         {clarifications.length > 0 && (
           <section className={`border-2 p-6 rounded-2xl mb-8 animate-slide-in ${
-            isDark
-              ? 'bg-gradient-to-br from-amber-900/30 to-orange-900/20 border-amber-700'
-              : 'bg-gradient-to-br from-orange-50 to-amber-50 border-orange-200'
+            isDark ? 'bg-gradient-to-br from-amber-900/30 to-orange-900/20 border-amber-700' : 'bg-gradient-to-br from-orange-50 to-amber-50 border-orange-200'
           }`}>
             <h4 className={`font-bold mb-2 flex items-center gap-2 ${isDark ? 'text-amber-300' : 'text-orange-800'}`}>
               <i className="fa-solid fa-robot"></i> Missing Details
@@ -403,9 +504,7 @@ function App() {
                     placeholder={c.question}
                     onKeyDown={e => { if (e.key === 'Enter') handleClarificationUpdate(); }}
                     className={`w-full px-4 py-3 border-2 rounded-lg text-sm focus:outline-none ${
-                      isDark
-                        ? 'bg-slate-800 border-amber-600 text-white focus:border-amber-400 placeholder-slate-500'
-                        : 'bg-white border-orange-300 text-slate-800 focus:border-orange-500'
+                      isDark ? 'bg-slate-800 border-amber-600 text-white focus:border-amber-400 placeholder-slate-500' : 'bg-white border-orange-300 text-slate-800 focus:border-orange-500'
                     }`}
                   />
                 </div>
@@ -434,65 +533,94 @@ function App() {
           />
         )}
 
-        {/* ===== KANBAN BOARD ===== */}
+        {/* ===== KANBAN BOARD (Day 7: Drag & Drop) ===== */}
         {allTasks.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-slide-in">
+
             {/* Ready for Calendar */}
-            <section className={`rounded-2xl shadow-md p-5 transition-colors ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
-              <div className="flex justify-between items-center pb-4 border-b-[3px] border-emerald-400 mb-5">
-                <span className="font-bold text-xs uppercase text-emerald-500 flex items-center gap-2">
-                  <i className="fa-solid fa-rocket"></i> Ready for Calendar
-                </span>
-                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${isDark ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
-                  {readyTasks.length}
-                </span>
-              </div>
-              <div className="max-h-[500px] overflow-y-auto scrollbar-thin pr-1">
-                {readyTasks.length > 0 ? (
-                  readyTasks.map(task => (
-                    <TaskCard key={task.id} task={task}
-                      onDelete={handleDeleteTask} onMove={handleMoveTask}
-                      onEditTitle={handleEditTitle} onChangePriority={handleChangePriority}
-                      moveLabel="→ Review" />
-                  ))
-                ) : (
-                  <EmptyState type="ready" />
-                )}
-              </div>
-              {accessToken && readyTasks.length > 0 && (
-                <button onClick={handleCalendarSync} disabled={syncing}
-                  className="w-full mt-4 py-3 bg-emerald-500 text-white rounded-xl font-bold text-sm hover:bg-emerald-600 disabled:opacity-50 transition-all flex items-center justify-center gap-2">
-                  {syncing
-                    ? <><i className="fa-solid fa-spinner fa-spin"></i> Syncing...</>
-                    : <><i className="fa-solid fa-cloud-arrow-up"></i> Push to Google Calendar</>
-                  }
-                </button>
+            <DragDropColumn
+              columnId="ready"
+              isDragOver={dragState.dragOverColumn === 'ready'}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              isDark={isDark}
+              header={
+                <div className="flex justify-between items-center pb-4 border-b-[3px] border-emerald-400 mb-5">
+                  <span className="font-bold text-xs uppercase text-emerald-500 flex items-center gap-2">
+                    <i className="fa-solid fa-rocket"></i> Ready for Calendar
+                  </span>
+                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${isDark ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                    {readyTasks.length}
+                  </span>
+                </div>
+              }
+              footer={
+                accessToken && readyTasks.length > 0 ? (
+                  <button onClick={handleCalendarSync} disabled={syncing}
+                    className="w-full mt-4 py-3 bg-emerald-500 text-white rounded-xl font-bold text-sm hover:bg-emerald-600 disabled:opacity-50 transition-all flex items-center justify-center gap-2">
+                    {syncing
+                      ? <><i className="fa-solid fa-spinner fa-spin"></i> Syncing...</>
+                      : <><i className="fa-solid fa-cloud-arrow-up"></i> Push to Google Calendar</>
+                    }
+                  </button>
+                ) : undefined
+              }
+            >
+              {readyTasks.length > 0 ? (
+                readyTasks.map(task => (
+                  <TaskCard key={task.id} task={task} isDark={isDark}
+                    onDelete={handleDeleteTask}
+                    onMove={handleMoveTask}
+                    onEditTitle={handleEditTitle}
+                    onChangePriority={handleChangePriority}
+                    onChangeDate={handleChangeDate}
+                    onDragStart={handleDragStart}
+                    onDragEnd={handleDragEnd}
+                    isDragging={dragState.draggedTaskId === task.id}
+                    moveLabel="→ Review" />
+                ))
+              ) : (
+                <EmptyState type="ready" />
               )}
-            </section>
+            </DragDropColumn>
 
             {/* Needs Review */}
-            <section className={`rounded-2xl shadow-md p-5 transition-colors ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
-              <div className="flex justify-between items-center pb-4 border-b-[3px] border-amber-400 mb-5">
-                <span className="font-bold text-xs uppercase text-amber-500 flex items-center gap-2">
-                  <i className="fa-solid fa-triangle-exclamation"></i> Needs Review
-                </span>
-                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${isDark ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
-                  {reviewTasks.length}
-                </span>
-              </div>
-              <div className="max-h-[500px] overflow-y-auto scrollbar-thin pr-1">
-                {reviewTasks.length > 0 ? (
-                  reviewTasks.map(task => (
-                    <TaskCard key={task.id} task={task}
-                      onDelete={handleDeleteTask} onMove={handleMoveTask}
-                      onEditTitle={handleEditTitle} onChangePriority={handleChangePriority}
-                      moveLabel="→ Ready" />
-                  ))
-                ) : (
-                  <EmptyState type="review" />
-                )}
-              </div>
-            </section>
+            <DragDropColumn
+              columnId="review"
+              isDragOver={dragState.dragOverColumn === 'review'}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              isDark={isDark}
+              header={
+                <div className="flex justify-between items-center pb-4 border-b-[3px] border-amber-400 mb-5">
+                  <span className="font-bold text-xs uppercase text-amber-500 flex items-center gap-2">
+                    <i className="fa-solid fa-triangle-exclamation"></i> Needs Review
+                  </span>
+                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${isDark ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                    {reviewTasks.length}
+                  </span>
+                </div>
+              }
+            >
+              {reviewTasks.length > 0 ? (
+                reviewTasks.map(task => (
+                  <TaskCard key={task.id} task={task} isDark={isDark}
+                    onDelete={handleDeleteTask}
+                    onMove={handleMoveTask}
+                    onEditTitle={handleEditTitle}
+                    onChangePriority={handleChangePriority}
+                    onChangeDate={handleChangeDate}
+                    onDragStart={handleDragStart}
+                    onDragEnd={handleDragEnd}
+                    isDragging={dragState.draggedTaskId === task.id}
+                    moveLabel="→ Ready" />
+                ))
+              ) : (
+                <EmptyState type="review" />
+              )}
+            </DragDropColumn>
           </div>
         )}
 
@@ -507,6 +635,34 @@ function App() {
              className="text-indigo-500 hover:underline" target="_blank" rel="noreferrer">API Docs</a>
         </footer>
       </div>
+
+      {/* ===== SHORTCUTS MODAL ===== */}
+      <ShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} isDark={isDark} />
+
+      {/* ===== UNDO BUTTON (floating) ===== */}
+      {canUndo && (
+        <button
+          onClick={handleUndo}
+          className="fixed bottom-20 right-6 bg-indigo-500 text-white px-4 py-2.5 rounded-xl shadow-lg font-bold text-xs flex items-center gap-2 hover:bg-indigo-600 transition-all z-40 animate-slide-in"
+          title="Ctrl+Z"
+        >
+          <i className="fa-solid fa-rotate-left"></i>
+          Undo
+        </button>
+      )}
+
+      {/* ===== KEYBOARD HINT BUTTON ===== */}
+      <button
+        onClick={() => setShowShortcuts(true)}
+        className={`fixed bottom-6 right-6 w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold z-40 transition-all ${
+          isDark
+            ? 'bg-slate-700 text-slate-400 hover:bg-slate-600 hover:text-white'
+            : 'bg-slate-200 text-slate-500 hover:bg-slate-300 hover:text-slate-700'
+        }`}
+        title="Keyboard shortcuts (?)"
+      >
+        ?
+      </button>
 
       {/* ===== TOAST ===== */}
       <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 bg-gradient-to-r ${toastColors[toast.type]} text-white px-8 py-4 rounded-xl font-medium shadow-2xl z-50 transition-all duration-400 max-w-[90%] text-center text-sm ${
