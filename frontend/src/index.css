@@ -2,11 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ======================== BASE ======================== */
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
-/* Slide in animation */
+/* ======================== DARK MODE ======================== */
+:root {
+  --bg-primary: #f1f5f9;
+  --bg-surface: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --border-color: #e2e8f0;
+}
+
+.dark {
+  --bg-primary: #0f172a;
+  --bg-surface: #1e293b;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --border-color: #334155;
+}
+
+/* Dark mode body */
+.dark body,
+html.dark body {
+  background-color: #0f172a;
+  color: #f1f5f9;
+}
+
+/* ======================== ANIMATIONS ======================== */
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
@@ -15,7 +41,6 @@ body {
   animation: slideIn 0.3s ease-out;
 }
 
-/* Fade out animation for deleted tasks */
 @keyframes fadeOut {
   from { opacity: 1; transform: translateX(0); }
   to { opacity: 0; transform: translateX(20px); }
@@ -24,20 +49,78 @@ body {
   animation: fadeOut 0.3s ease-in forwards;
 }
 
-/* Task card hover */
+/* ======================== TASK CARD ======================== */
 .task-card-hover:hover {
   transform: translateX(4px);
 }
 
-/* Custom scrollbar */
+/* ======================== SCROLLBAR ======================== */
 .scrollbar-thin::-webkit-scrollbar { width: 6px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-/* Focus styles */
+.dark .scrollbar-thin::-webkit-scrollbar-thumb { background: #475569; }
+.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ======================== FOCUS ======================== */
 button:focus-visible,
 textarea:focus-visible,
 input:focus-visible {
   @apply ring-4 ring-indigo-500/20 outline-none;
 }
+
+/* ======================== DARK MODE OVERRIDES ======================== */
+.dark .bg-white { background-color: #1e293b; }
+.dark .bg-slate-100 { background-color: #0f172a; }
+.dark .bg-slate-50 { background-color: #1e293b; }
+.dark .bg-gray-50 { background-color: #1e293b; }
+.dark .border-gray-200 { border-color: #334155; }
+.dark .border-gray-100 { border-color: #334155; }
+.dark .border-slate-200 { border-color: #334155; }
+.dark .text-slate-800 { color: #e2e8f0; }
+.dark .text-slate-700 { color: #cbd5e1; }
+.dark .text-slate-600 { color: #94a3b8; }
+.dark .text-slate-500 { color: #64748b; }
+.dark .text-slate-400 { color: #64748b; }
+.dark .text-gray-900 { color: #f1f5f9; }
+.dark .text-gray-500 { color: #94a3b8; }
+.dark .text-gray-400 { color: #64748b; }
+.dark .shadow-md { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3); }
+.dark .shadow-sm { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
+
+/* Dark mode textarea */
+.dark textarea {
+  background-color: #1e293b;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+.dark textarea::placeholder { color: #64748b; }
+.dark textarea:focus { border-color: #6366f1; }
+
+/* Dark mode input */
+.dark input[type="text"] {
+  background-color: #1e293b;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+.dark input[type="text"]::placeholder { color: #64748b; }
+
+/* Dark mode task card */
+.dark .task-card-hover {
+  background-color: #0f172a;
+  border-color: #334155;
+}
+.dark .task-card-hover:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Dark mode clarification zone */
+.dark .bg-gradient-to-br.from-orange-50 {
+  background: linear-gradient(to bottom right, #451a03, #78350f) !important;
+}
+
+/* Dark mode stats cards */
+.dark .border-green-100 { border-color: #064e3b; }
+.dark .border-amber-100 { border-color: #78350f; }
+.dark .border-red-100 { border-color: #7f1d1d; }
