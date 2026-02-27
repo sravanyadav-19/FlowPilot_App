@@ -1,3 +1,8 @@
+// ============================================================================
+// FILE: frontend/src/App.tsx
+// Day 8: Enhanced with recurring tasks, templates, stats, and completion
+// ============================================================================
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useTaskExtractor } from './hooks/useTaskExtractor';
 import { useLocalStorage } from './hooks/useLocalStorage';
@@ -6,6 +11,8 @@ import { useExport } from './hooks/useExport';
 import { useDragDrop } from './hooks/useDragDrop';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useUndoRedo } from './hooks/useUndoRedo';
+import { useTaskStats } from './hooks/useTaskStats';
+import { useCompletedTasks } from './hooks/useCompletedTasks';
 import { TaskCard } from './components/TaskCard';
 import { EmptyState } from './components/EmptyState';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -13,7 +20,10 @@ import { FilterBar } from './components/FilterBar';
 import { ExportMenu } from './components/ExportMenu';
 import { DragDropColumn } from './components/DragDropColumn';
 import { ShortcutsModal } from './components/ShortcutsModal';
-import { Task } from './types/task';
+import { TemplatesPanel } from './components/TemplatesPanel';
+import { StatsDashboard } from './components/StatsDashboard';
+import { CompletedTasksSection } from './components/CompletedTasksSection';
+import { Task, RecurrenceType } from './types/task';
 import './index.css';
 
 function App() {
@@ -26,7 +36,7 @@ function App() {
   const [savedTasks, setSavedTasks, clearSaved] = useLocalStorage<Task[]>('flowpilot-tasks', []);
   const toastTimeout = useRef<NodeJS.Timeout>();
 
-  // Day 6: Theme, Export, Filters
+  // Theme, Export, Filters
   const { isDark, toggleTheme } = useTheme();
   const { exportJSON, exportCSV, copyToClipboard } = useExport();
   const [searchQuery, setSearchQuery] = useState('');
@@ -34,10 +44,13 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [sortBy, setSortBy] = useState<'default' | 'priority' | 'date' | 'category'>('default');
 
-  // Day 7: Drag & Drop, Shortcuts, Undo
+  // Drag & Drop, Shortcuts, Undo
   const [showShortcuts, setShowShortcuts] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const { pushUndo, popUndo, canUndo, lastAction } = useUndoRedo();
+
+  // Day 8: Completed tasks
+  const { completedTasks, completeTask, uncompleteTask, deleteCompletedTask, clearCompleted } = useCompletedTasks();
 
   const {
     tasks, clarifications, loading, error, config,
@@ -46,6 +59,9 @@ function App() {
 
   // ======================== COMPUTED TASKS ========================
   const allTasks = tasks.length > 0 ? tasks : savedTasks;
+
+  // Day 8: Statistics
+  const stats = useTaskStats(allTasks, completedTasks);
 
   const filteredTasks = allTasks.filter(task => {
     if (searchQuery) {
@@ -157,7 +173,6 @@ function App() {
     showToast(`Priority → ${newPriority.toUpperCase()}`, 'info');
   }, [allTasks, setSavedTasks, showToast, pushUndo]);
 
-  // ======================== DAY 7: DATE CHANGE ========================
   const handleChangeDate = useCallback((id: string, newDate: string | null) => {
     const task = allTasks.find(t => t.id === id);
     if (task) {
@@ -174,7 +189,65 @@ function App() {
     showToast(newDate ? 'Date updated' : 'Date cleared', 'success');
   }, [allTasks, setSavedTasks, showToast, pushUndo]);
 
-  // ======================== DAY 7: DRAG & DROP ========================
+  // Day 8: Recurrence change
+  const handleChangeRecurrence = useCallback((id: string, recurrence: RecurrenceType) => {
+    const task = allTasks.find(t => t.id === id);
+    if (task) {
+      pushUndo({
+        type: 'edit',
+        taskId: id,
+        previousState: { ...task },
+        description: `Recurrence of "${task.title.slice(0, 20)}..."`
+      });
+    }
+    setSavedTasks(prev => prev.map(t =>
+      t.id === id ? { ...t, recurrence } : t
+    ));
+    showToast(recurrence === 'none' ? 'Recurrence removed' : `Repeats ${recurrence}`, 'success');
+  }, [allTasks, setSavedTasks, showToast, pushUndo]);
+
+  // Day 8: Complete task
+  const handleCompleteTask = useCallback((id: string) => {
+    const task = allTasks.find(t => t.id === id);
+    if (!task) return;
+
+    // Complete the task (may return new recurring task)
+    const newRecurringTask = completeTask(task);
+
+    // Remove from active tasks
+    setSavedTasks(prev => {
+      const filtered = prev.filter(t => t.id !== id);
+      // If recurring, add the new instance
+      if (newRecurringTask) {
+        return [...filtered, newRecurringTask];
+      }
+      return filtered;
+    });
+
+    showToast(
+      newRecurringTask
+        ? `✓ Completed! Next ${task.recurrence} task created 🔥`
+        : '✓ Task completed!',
+      'success'
+    );
+  }, [allTasks, completeTask, setSavedTasks, showToast]);
+
+  // Day 8: Uncomplete (restore) task
+  const handleUncompleteTask = useCallback((taskId: string) => {
+    const restored = uncompleteTask(taskId);
+    if (restored) {
+      setSavedTasks(prev => [...prev, restored]);
+      showToast('Task restored', 'success');
+    }
+  }, [uncompleteTask, setSavedTasks, showToast]);
+
+  // Day 8: Add tasks from template
+  const handleAddFromTemplate = useCallback((newTasks: Task[]) => {
+    setSavedTasks(prev => [...prev, ...newTasks]);
+    showToast(`Added ${newTasks.length} tasks from template!`, 'success');
+  }, [setSavedTasks, showToast]);
+
+  // ======================== DRAG & DROP ========================
   const handleDragMove = useCallback((taskId: string, targetColumn: 'ready' | 'review') => {
     const task = allTasks.find(t => t.id === taskId);
     if (!task) return;
@@ -200,7 +273,7 @@ function App() {
     handleDragOver, handleDragLeave, handleDrop,
   } = useDragDrop(handleDragMove);
 
-  // ======================== DAY 7: UNDO ========================
+  // ======================== UNDO ========================
   const handleUndo = useCallback(() => {
     const action = popUndo();
     if (!action) {
@@ -218,7 +291,7 @@ function App() {
     showToast(`Undone: ${action.description}`, 'success');
   }, [popUndo, setSavedTasks, showToast]);
 
-  // ======================== DAY 7: KEYBOARD SHORTCUTS ========================
+  // ======================== KEYBOARD SHORTCUTS ========================
   useKeyboardShortcuts({
     onToggleTheme: toggleTheme,
     onFocusSearch: () => searchInputRef.current?.focus(),
@@ -295,7 +368,7 @@ function App() {
     for (const task of toSync) {
       const event: any = {
         summary: task.title,
-        description: `Original: "${task.original_text}"\nPriority: ${task.priority.toUpperCase()}\n\nCreated by FlowPilot AI`,
+        description: `Original: "${task.original_text}"\nPriority: ${task.priority.toUpperCase()}${task.recurrence !== 'none' ? `\nRecurrence: ${task.recurrence}` : ''}\n\nCreated by FlowPilot AI`,
       };
       if (task.due_date!.includes('T')) {
         const start = new Date(task.due_date!);
@@ -410,24 +483,17 @@ function App() {
           </div>
         </header>
 
-        {/* ===== STATS BAR ===== */}
-        {allTasks.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6 animate-slide-in">
-            {[
-              { label: 'Total Tasks', value: allTasks.length, color: isDark ? 'text-white' : 'text-slate-800', border: isDark ? 'border-slate-700' : 'border-gray-100' },
-              { label: 'Ready', value: allTasks.filter(t => t.is_clarified).length, color: 'text-emerald-500', border: isDark ? 'border-emerald-900' : 'border-green-100' },
-              { label: 'Needs Review', value: allTasks.filter(t => !t.is_clarified).length, color: 'text-amber-500', border: isDark ? 'border-amber-900' : 'border-amber-100' },
-              { label: 'High Priority', value: allTasks.filter(t => t.priority === 'high').length, color: 'text-red-500', border: isDark ? 'border-red-900' : 'border-red-100' },
-            ].map((stat, i) => (
-              <div key={i} className={`rounded-xl p-4 shadow-sm border text-center transition-colors ${
-                isDark ? 'bg-slate-800' : 'bg-white'
-              } ${stat.border}`}>
-                <p className={`text-2xl font-extrabold ${stat.color}`}>{stat.value}</p>
-                <p className={`text-xs font-medium mt-1 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{stat.label}</p>
-              </div>
-            ))}
+        {/* ===== DAY 8: STATS DASHBOARD ===== */}
+        {(allTasks.length > 0 || completedTasks.length > 0) && (
+          <div className="mb-6 animate-slide-in">
+            <StatsDashboard stats={stats} isDark={isDark} />
           </div>
         )}
+
+        {/* ===== DAY 8: TEMPLATES PANEL ===== */}
+        <div className="mb-6">
+          <TemplatesPanel onAddTasks={handleAddFromTemplate} isDark={isDark} />
+        </div>
 
         {/* ===== INPUT PANEL ===== */}
         <section className={`p-6 rounded-2xl shadow-md mb-8 transition-colors ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
@@ -533,7 +599,7 @@ function App() {
           />
         )}
 
-        {/* ===== KANBAN BOARD (Day 7: Drag & Drop) ===== */}
+        {/* ===== KANBAN BOARD ===== */}
         {allTasks.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-slide-in">
 
@@ -575,6 +641,8 @@ function App() {
                     onEditTitle={handleEditTitle}
                     onChangePriority={handleChangePriority}
                     onChangeDate={handleChangeDate}
+                    onChangeRecurrence={handleChangeRecurrence}
+                    onComplete={handleCompleteTask}
                     onDragStart={handleDragStart}
                     onDragEnd={handleDragEnd}
                     isDragging={dragState.draggedTaskId === task.id}
@@ -612,6 +680,8 @@ function App() {
                     onEditTitle={handleEditTitle}
                     onChangePriority={handleChangePriority}
                     onChangeDate={handleChangeDate}
+                    onChangeRecurrence={handleChangeRecurrence}
+                    onComplete={handleCompleteTask}
                     onDragStart={handleDragStart}
                     onDragEnd={handleDragEnd}
                     isDragging={dragState.draggedTaskId === task.id}
@@ -621,6 +691,19 @@ function App() {
                 <EmptyState type="review" />
               )}
             </DragDropColumn>
+          </div>
+        )}
+
+        {/* ===== DAY 8: COMPLETED TASKS ===== */}
+        {completedTasks.length > 0 && (
+          <div className="mt-6 animate-slide-in">
+            <CompletedTasksSection
+              tasks={completedTasks}
+              onUncomplete={handleUncompleteTask}
+              onDelete={deleteCompletedTask}
+              onClearAll={clearCompleted}
+              isDark={isDark}
+            />
           </div>
         )}
 

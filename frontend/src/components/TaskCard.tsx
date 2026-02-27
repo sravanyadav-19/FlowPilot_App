@@ -1,6 +1,13 @@
+// ============================================================================
+// FILE: frontend/src/components/TaskCard.tsx
+// Day 8: Enhanced with complete button, recurrence badge, and recurrence selector
+// ============================================================================
+
 import React, { useState, DragEvent } from 'react';
-import { Task, PRIORITY_COLORS, CATEGORY_STYLES } from '../types/task';
+import { Task, PRIORITY_COLORS, CATEGORY_STYLES, RecurrenceType } from '../types/task';
 import { DatePicker } from './DatePicker';
+import { RecurrenceBadge } from './RecurrenceBadge';
+import { RecurrenceSelector } from './RecurrenceSelector';
 
 interface TaskCardProps {
   task: Task;
@@ -9,6 +16,8 @@ interface TaskCardProps {
   onEditTitle?: (id: string, newTitle: string) => void;
   onChangePriority?: (id: string, newPriority: 'high' | 'medium' | 'low') => void;
   onChangeDate?: (id: string, newDate: string | null) => void;
+  onChangeRecurrence?: (id: string, recurrence: RecurrenceType) => void;
+  onComplete?: (id: string) => void;
   moveLabel?: string;
   isDark?: boolean;
   // Drag handlers
@@ -42,13 +51,16 @@ function formatDate(dateStr?: string | null): string {
 
 export const TaskCard: React.FC<TaskCardProps> = ({
   task, onDelete, onMove, onEditTitle, onChangePriority, onChangeDate,
-  moveLabel, isDark = false, onDragStart, onDragEnd, isDragging,
+  onChangeRecurrence, onComplete, moveLabel, isDark = false,
+  onDragStart, onDragEnd, isDragging,
 }) => {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.title);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showPriorityMenu, setShowPriorityMenu] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showRecurrenceSelector, setShowRecurrenceSelector] = useState(false);
+  const [completing, setCompleting] = useState(false);
 
   const priorityStyle = PRIORITY_COLORS[task.priority] || PRIORITY_COLORS.medium;
   const categoryClass = CATEGORY_STYLES[task.category] || CATEGORY_STYLES.Work;
@@ -70,6 +82,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     }
   };
 
+  const handleComplete = () => {
+    setCompleting(true);
+    setTimeout(() => {
+      onComplete?.(task.id);
+    }, 400);
+  };
+
   return (
     <div
       draggable={!!onDragStart}
@@ -77,6 +96,8 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       onDragEnd={onDragEnd}
       className={`group task-card-hover p-4 rounded-xl mb-3 shadow-sm border transition-all duration-200 hover:shadow-md ${
         isDragging ? 'opacity-40 scale-95' : ''
+      } ${
+        completing ? 'animate-complete scale-95 opacity-50' : ''
       } ${
         isDark
           ? 'bg-slate-900/60 border-slate-700 hover:border-slate-500'
@@ -106,11 +127,52 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             </span>
           )}
 
+          {/* Recurrence Badge - Clickable */}
+          {task.recurrence !== 'none' ? (
+            <div className="relative">
+              <button
+                onClick={e => { e.stopPropagation(); setShowRecurrenceSelector(!showRecurrenceSelector); }}
+                className="cursor-pointer hover:opacity-80"
+              >
+                <RecurrenceBadge recurrence={task.recurrence} streak={task.streak} />
+              </button>
+              {showRecurrenceSelector && onChangeRecurrence && (
+                <RecurrenceSelector
+                  currentRecurrence={task.recurrence}
+                  onRecurrenceChange={(r) => onChangeRecurrence(task.id, r)}
+                  onClose={() => setShowRecurrenceSelector(false)}
+                  isDark={isDark}
+                />
+              )}
+            </div>
+          ) : onChangeRecurrence && (
+            <div className="relative">
+              <button
+                onClick={e => { e.stopPropagation(); setShowRecurrenceSelector(!showRecurrenceSelector); }}
+                className={`text-[0.65rem] px-1.5 py-0.5 rounded font-bold uppercase opacity-0 group-hover:opacity-100 transition-opacity ${
+                  isDark ? 'bg-slate-700 text-slate-400' : 'bg-slate-100 text-slate-500'
+                }`}
+              >
+                <i className="fa-solid fa-rotate mr-1"></i>Repeat
+              </button>
+              {showRecurrenceSelector && (
+                <RecurrenceSelector
+                  currentRecurrence={task.recurrence}
+                  onRecurrenceChange={(r) => onChangeRecurrence(task.id, r)}
+                  onClose={() => setShowRecurrenceSelector(false)}
+                  isDark={isDark}
+                />
+              )}
+            </div>
+          )}
+
           {/* Priority Badge - Clickable */}
           <div className="relative">
             <button
               onClick={e => { e.stopPropagation(); setShowPriorityMenu(!showPriorityMenu); }}
-              className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase cursor-pointer hover:opacity-80 ${priorityStyle.bg} ${priorityStyle.text}`}
+              className={`text-xs px-2.5 py-0.5 rounded font-bold uppercase cursor-pointer hover:opacity-80 ${
+                isDark ? priorityStyle.darkBg + ' ' + priorityStyle.darkText : priorityStyle.bg + ' ' + priorityStyle.text
+              }`}
               title="Click to change priority"
             >
               {task.priority}
@@ -140,6 +202,23 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             )}
           </div>
         </div>
+
+        {/* Complete Button */}
+        {onComplete && (
+          <button
+            onClick={handleComplete}
+            className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all hover:scale-110 ${
+              isDark
+                ? 'border-slate-500 hover:border-emerald-400 hover:bg-emerald-900/30'
+                : 'border-slate-300 hover:border-emerald-500 hover:bg-emerald-50'
+            }`}
+            title="Mark complete"
+          >
+            <i className={`fa-solid fa-check text-[0.5rem] opacity-0 group-hover:opacity-100 transition-opacity ${
+              isDark ? 'text-emerald-400' : 'text-emerald-600'
+            }`}></i>
+          </button>
+        )}
       </div>
 
       {/* Title - Click to Edit */}

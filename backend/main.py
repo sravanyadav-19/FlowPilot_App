@@ -95,6 +95,9 @@ app.add_middleware(
 # =============================================================================
 # MODELS
 # =============================================================================
+# =============================================================================
+# MODELS (UPDATED for Day 8)
+# =============================================================================
 class Task(BaseModel):
     id: str
     title: str
@@ -103,9 +106,12 @@ class Task(BaseModel):
     assignee: Optional[str] = None
     priority: Optional[str] = "medium"
     category: Optional[str] = "Work"
-    recurrence: Optional[str] = None
+    recurrence: Optional[str] = "none"  # Day 8: none | daily | weekly | monthly
     is_clarified: bool = False
     is_sarcastic: bool = False
+    completedAt: Optional[int] = None   # Day 8: Timestamp when completed
+    createdAt: Optional[int] = None     # Day 8: Timestamp when created
+    streak: Optional[int] = 0           # Day 8: For recurring tasks
 
 
 class ExtractionResponse(BaseModel):
@@ -412,6 +418,7 @@ def process_local(text: str) -> dict:
         if m:
             assignee = m.group(1).title()
 
+# Inside process_local function, when creating tasks dict:
         tasks.append({
             "title": title,
             "original_text": frag,
@@ -420,6 +427,10 @@ def process_local(text: str) -> dict:
             "category": detect_category(frag),
             "assignee": assignee,
             "is_sarcastic": False,
+            "recurrence": "none",      # Day 8
+            "completedAt": None,       # Day 8
+            "createdAt": int(datetime.now().timestamp() * 1000),  # Day 8
+            "streak": 0,               # Day 8
         })
 
     return {"tasks": tasks}

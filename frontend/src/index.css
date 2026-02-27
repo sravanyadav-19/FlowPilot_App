@@ -166,3 +166,70 @@ input:focus-visible {
 .dark input[type="time"] {
   color-scheme: dark;
 }
+/* ============================================================================
+   Day 8: New Animations & Styles
+   ============================================================================ */
+
+/* Task completion animation */
+@keyframes completeTask {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.05); opacity: 0.8; }
+  100% { transform: scale(0.95) translateX(20px); opacity: 0; }
+}
+.animate-complete {
+  animation: completeTask 0.4s ease-out forwards;
+}
+
+/* Confetti-like celebration effect (optional, add to buttons) */
+@keyframes celebrate {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+.animate-celebrate {
+  animation: celebrate 0.3s ease-out;
+}
+
+/* Streak fire pulse */
+@keyframes firePulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+.animate-fire {
+  animation: firePulse 1s ease-in-out infinite;
+}
+
+/* Bar chart grow animation */
+@keyframes barGrow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+.animate-bar {
+  animation: barGrow 0.5s ease-out;
+  transform-origin: bottom;
+}
+
+/* Template card hover */
+.template-card:hover {
+  transform: translateY(-2px);
+}
+
+/* Stat card counter animation */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-count {
+  animation: countUp 0.4s ease-out;
+}
+
+/* Progress bar shine effect */
+@keyframes shine {
+  0% { background-position: -100px; }
+  100% { background-position: 200px; }
+}
+.progress-shine {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+  background-size: 100px 100%;
+  animation: shine 2s infinite;
+}
